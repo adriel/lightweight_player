@@ -11,7 +11,7 @@ import json, os, re, subprocess, sys, threading, time, argparse
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(ROOT, "build/Build/Products/Release/LightBench.app/Contents/MacOS/LightBench")
 MEDIA = os.path.join(ROOT, "Bench/media")
-HELPERS = ("VTDecoderXPCService", "MKVReader", "com.apple.CMExtensionBroker")
+HELPERS = ("VTDecoderXPCService", "MKVReader", "com.apple.CMExtensionBroker", "QLVideo Formats", "QLVideo Codecs")
 
 def remote_url():
     u = os.environ.get("LP_REMOTE_URL")
@@ -28,8 +28,9 @@ CASES = [
     ("4K Remux MKV (DTS-HD, PGS) 9 GB", "/path/to/4k-hdr10-remux.mkv", "BCD"),
     ("1080p H.264 MP4 4.5 h 15 GB", "/path/to/twitch-vod.mp4", "ACD"),
     ("Remote HTTPS 1080p MKV", "REMOTE", "BCD"),
-    ("VP9 WebM", os.path.join(MEDIA, "vp9_1080p.webm"), "CD"),
-    ("AV1 MKV (sw on M2)", os.path.join(MEDIA, "av1_1080p.mkv"), "CD"),
+    ("VP9 WebM", os.path.join(MEDIA, "vp9_1080p.webm"), "BCD"),
+    ("AV1 MKV (sw on M2)", os.path.join(MEDIA, "av1_1080p.mkv"), "BCD"),
+    ("H.264 + DTS MKV", os.path.join(MEDIA, "h264_dts.mkv"), "BCD"),
 ]
 
 def helper_pids():

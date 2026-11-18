@@ -1,0 +1,550 @@
+[
+ {
+  "engine": "C",
+  "summary": {
+   "cpuAvgPct": 4.3,
+   "cpuPeakPct": 9.3,
+   "diag": {
+    "audio": "aac",
+    "hwDecodeSupported": "true",
+    "lead": "v1.3 a1.6 pend v19 a0",
+    "video": "h264"
+   },
+   "duration": 120.1,
+   "engine": "C",
+   "event": "summary",
+   "finalPos": 22,
+   "firstFrameSec": 0.09,
+   "label": "FFdemux+AVSBDL",
+   "media": "h264_1080p.mp4",
+   "memAvgMB": 29.5,
+   "memPeakMB": 31.3,
+   "pid": 22215,
+   "warnings": []
+  },
+  "helpers": [
+   "VTDecoderXPCService"
+  ],
+  "appAvg": 29.375,
+  "appPeak": 31.0,
+  "helperAvg": 65.6875,
+  "helperPeak": 74.0,
+  "totalAvg": 95.0625,
+  "totalPeak": 105.0,
+  "appCpu": 4.451314851518511,
+  "helperCpu": 3.4621337734032864,
+  "case": "1080p H.264 MP4"
+ },
+ {
+  "engine": "C",
+  "summary": {
+   "cpuAvgPct": 4.3,
+   "cpuPeakPct": 10.9,
+   "diag": {
+    "audio": "aac",
+    "hwDecodeSupported": "true",
+    "lead": "v2.1 a2.3 pend v10 a0",
+    "video": "hevc"
+   },
+   "duration": 120.3,
+   "engine": "C",
+   "event": "summary",
+   "finalPos": 22,
+   "firstFrameSec": 0.07,
+   "label": "FFdemux+AVSBDL",
+   "media": "hevc4k_hdr.mp4",
+   "memAvgMB": 47.9,
+   "memPeakMB": 66.1,
+   "pid": 22362,
+   "warnings": []
+  },
+  "helpers": [
+   "VTDecoderXPCService"
+  ],
+  "appAvg": 46.875,
+  "appPeak": 53.0,
+  "helperAvg": 202.3125,
+  "helperPeak": 231.0,
+  "totalAvg": 249.1875,
+  "totalPeak": 284.0,
+  "appCpu": 4.276772476821771,
+  "helperCpu": 2.4173061825514353,
+  "case": "4K HDR HEVC MP4"
+ },
+ {
+  "engine": "B",
+  "summary": {
+   "cpuAvgPct": 3.5,
+   "cpuPeakPct": 6.8,
+   "diag": {
+    "mediaExtension": "uk.org.marginal.qlvideo.formatreader",
+    "soun": "aac ",
+    "vide": "hvc1"
+   },
+   "duration": 121.2,
+   "engine": "B",
+   "event": "summary",
+   "finalPos": 21.8,
+   "firstFrameSec": 1.92,
+   "label": "AVPlayer+MKVExt",
+   "media": "hevc4k_hdr.mkv",
+   "memAvgMB": 53.1,
+   "memPeakMB": 57,
+   "pid": 22493,
+   "warnings": []
+  },
+  "helpers": [
+   "QLVideo Formats",
+   "VTDecoderXPCService",
+   "com.apple.CMExtensionBroker"
+  ],
+  "appAvg": 53.733333333333334,
+  "appPeak": 61.0,
+  "helperAvg": 299.01354166666664,
+  "helperPeak": 397.734375,
+  "totalAvg": 352.746875,
+  "totalPeak": 454.734375,
+  "appCpu": 3.4844215601623074,
+  "helperCpu": 3.4210684408866294,
+  "case": "4K HDR HEVC MKV"
+ },
+ {
+  "engine": "C",
+  "summary": {
+   "cpuAvgPct": 4.5,
+   "cpuPeakPct": 9,
+   "diag": {
+    "audio": "aac",
+    "hwDecodeSupported": "true",
+    "lead": "v1.6 a1.9 pend v11 a0",
+    "video": "hevc"
+   },
+   "duration": 121.2,
+   "engine": "C",
+   "event": "summary",
+   "finalPos": 22.1,
+   "firstFrameSec": 0.08,
+   "label": "FFdemux+AVSBDL",
+   "media": "hevc4k_hdr.mkv",
+   "memAvgMB": 44.6,
+   "memPeakMB": 50.5,
+   "pid": 22692,
+   "warnings": []
+  },
+  "helpers": [
+   "VTDecoderXPCService"
+  ],
+  "appAvg": 44.625,
+  "appPeak": 50.0,
+  "helperAvg": 201.3125,
+  "helperPeak": 231.0,
+  "totalAvg": 245.9375,
+  "totalPeak": 281.0,
+  "appCpu": 4.492369427433234,
+  "helperCpu": 2.447566791498107,
+  "case": "4K HDR HEVC MKV"
+ },
+ {
+  "engine": "B",
+  "summary": {
+   "cpuAvgPct": 6.3,
+   "cpuPeakPct": 12.2,
+   "diag": {
+    "mediaExtension": "uk.org.marginal.qlvideo.formatreader",
+    "soun": "lpcm",
+    "vide": "hvc1"
+   },
+   "duration": 1370.6,
+   "engine": "B",
+   "event": "summary",
+   "finalPos": 146.5,
+   "firstFrameSec": 2.07,
+   "label": "AVPlayer+MKVExt",
+   "media": "4k-hdr10-remux.mkv",
+   "memAvgMB": 72,
+   "memPeakMB": 77.9,
+   "pid": 22794,
+   "warnings": []
+  },
+  "helpers": [
+   "QLVideo Formats",
+   "VTDecoderXPCService",
+   "com.apple.CMExtensionBroker"
+  ],
+  "appAvg": 72.06666666666666,
+  "appPeak": 77.0,
+  "helperAvg": 282.5625,
+  "helperPeak": 382.75,
+  "totalAvg": 354.62916666666666,
+  "totalPeak": 456.75,
+  "appCpu": 6.3002661107579865,
+  "helperCpu": 6.013890378450807,
+  "case": "4K Remux MKV (DTS-HD, PGS) 9 GB"
+ },
+ {
+  "engine": "C",
+  "summary": {
+   "cpuAvgPct": 9.8,
+   "cpuPeakPct": 17.6,
+   "diag": {
+    "audio": "dts",
+    "audioDecoder": "software",
+    "hwDecodeSupported": "true",
+    "lead": "v1.4 a1.0 pend v0 a38",
+    "video": "hevc"
+   },
+   "duration": 1370.6,
+   "engine": "C",
+   "event": "summary",
+   "finalPos": 147,
+   "firstFrameSec": 0.07,
+   "label": "FFdemux+AVSBDL",
+   "media": "4k-hdr10-remux.mkv",
+   "memAvgMB": 61.1,
+   "memPeakMB": 70.9,
+   "pid": 23239,
+   "warnings": []
+  },
+  "helpers": [
+   "VTDecoderXPCService"
+  ],
+  "appAvg": 61.125,
+  "appPeak": 71.0,
+  "helperAvg": 205.625,
+  "helperPeak": 292.0,
+  "totalAvg": 266.75,
+  "totalPeak": 349.0,
+  "appCpu": 9.900100818692156,
+  "helperCpu": 2.165647054088909,
+  "case": "4K Remux MKV (DTS-HD, PGS) 9 GB"
+ },
+ {
+  "engine": "C",
+  "summary": {
+   "cpuAvgPct": 5,
+   "cpuPeakPct": 9.9,
+   "diag": {
+    "audio": "aac",
+    "hwDecodeSupported": "true",
+    "lead": "v1.3 a1.6 pend v18 a0",
+    "video": "h264"
+   },
+   "duration": 16162.6,
+   "engine": "C",
+   "event": "summary",
+   "finalPos": 1626.2,
+   "firstFrameSec": 0.24,
+   "label": "FFdemux+AVSBDL",
+   "media": "twitch-vod.mp4",
+   "memAvgMB": 138,
+   "memPeakMB": 144.7,
+   "pid": 23746,
+   "warnings": []
+  },
+  "helpers": [
+   "VTDecoderXPCService"
+  ],
+  "appAvg": 138.375,
+  "appPeak": 147.0,
+  "helperAvg": 66.25,
+  "helperPeak": 85.0,
+  "totalAvg": 204.625,
+  "totalPeak": 232.0,
+  "appCpu": 5.087212650016527,
+  "helperCpu": 4.125605380806086,
+  "case": "1080p H.264 MP4 4.5 h 15 GB"
+ },
+ {
+  "engine": "B",
+  "summary": {
+   "cpuAvgPct": 32.7,
+   "cpuPeakPct": 52.9,
+   "diag": {
+    "droppedFrames": "11",
+    "mediaExtension": "uk.org.marginal.qlvideo.formatreader",
+    "soun": "aac ",
+    "vide": "avc1"
+   },
+   "duration": 1353.7,
+   "engine": "B",
+   "event": "summary",
+   "finalPos": 694.7,
+   "firstFrameSec": 7.07,
+   "label": "AVPlayer+MKVExt",
+   "media": "1080p-web.mkv",
+   "memAvgMB": 40.5,
+   "memPeakMB": 43,
+   "pid": 24184,
+   "warnings": []
+  },
+  "helpers": [
+   "QLVideo Formats",
+   "VTDecoderXPCService",
+   "com.apple.CMExtensionBroker"
+  ],
+  "appAvg": 40.6,
+  "appPeak": 43.0,
+  "helperAvg": 60.0654296875,
+  "helperPeak": 98.6875,
+  "totalAvg": 100.6654296875,
+  "totalPeak": 139.6875,
+  "appCpu": 36.85629004851897,
+  "helperCpu": 10.589071326118228,
+  "case": "Remote HTTPS 1080p MKV"
+ },
+ {
+  "engine": "C",
+  "summary": {
+   "cpuAvgPct": 14.8,
+   "cpuPeakPct": 32.1,
+   "diag": {
+    "audio": "aac",
+    "hwDecodeSupported": "true",
+    "lead": "v1.8 a2.1 pend v8 a0",
+    "video": "h264"
+   },
+   "duration": 1353.7,
+   "engine": "C",
+   "event": "summary",
+   "finalPos": 145.3,
+   "firstFrameSec": 0.47,
+   "label": "FFdemux+AVSBDL",
+   "media": "1080p-web.mkv",
+   "memAvgMB": 33,
+   "memPeakMB": 37.4,
+   "pid": 24584,
+   "warnings": []
+  },
+  "helpers": [
+   "VTDecoderXPCService"
+  ],
+  "appAvg": 32.9375,
+  "appPeak": 36.0,
+  "helperAvg": 89.125,
+  "helperPeak": 133.0,
+  "totalAvg": 122.0625,
+  "totalPeak": 164.0,
+  "appCpu": 14.493895273652152,
+  "helperCpu": 1.811736909206519,
+  "case": "Remote HTTPS 1080p MKV"
+ },
+ {
+  "engine": "B",
+  "summary": {
+   "cpuAvgPct": 1.2,
+   "cpuPeakPct": 4.4,
+   "diag": {
+    "mediaExtension": "uk.org.marginal.qlvideo.formatreader",
+    "soun": "lpcm",
+    "vide": "VP9 "
+   },
+   "duration": 20,
+   "engine": "B",
+   "event": "summary",
+   "finalPos": 2,
+   "firstFrameSec": 0.44,
+   "label": "AVPlayer+MKVExt",
+   "media": "vp9_1080p.webm",
+   "memAvgMB": 24.7,
+   "memPeakMB": 27,
+   "pid": 24731,
+   "warnings": []
+  },
+  "helpers": [
+   "QLVideo Codecs",
+   "QLVideo Formats",
+   "com.apple.CMExtensionBroker"
+  ],
+  "appAvg": 24.6,
+  "appPeak": 27.0,
+  "helperAvg": 112.93014322916666,
+  "helperPeak": 279.3759765625,
+  "totalAvg": 137.53014322916667,
+  "totalPeak": 305.3916015625,
+  "appCpu": 1.1573873186696595,
+  "helperCpu": 6.5263784913872485,
+  "case": "VP9 WebM"
+ },
+ {
+  "engine": "C",
+  "summary": {
+   "cpuAvgPct": 3.6,
+   "cpuPeakPct": 9.5,
+   "diag": {
+    "audio": "opus",
+    "hwDecodeSupported": "true",
+    "lead": "v1.3 a1.6 pend v7 a0",
+    "video": "vp9"
+   },
+   "duration": 20,
+   "engine": "C",
+   "event": "summary",
+   "finalPos": 12,
+   "firstFrameSec": 0.08,
+   "label": "FFdemux+AVSBDL",
+   "media": "vp9_1080p.webm",
+   "memAvgMB": 24.4,
+   "memPeakMB": 25.7,
+   "pid": 24897,
+   "warnings": []
+  },
+  "helpers": [
+   "VTDecoderXPCService"
+  ],
+  "appAvg": 24.5,
+  "appPeak": 26.0,
+  "helperAvg": 55.9375,
+  "helperPeak": 61.0,
+  "totalAvg": 80.4375,
+  "totalPeak": 86.0,
+  "appCpu": 3.6023971918644286,
+  "helperCpu": 1.9254191887551255,
+  "case": "VP9 WebM"
+ },
+ {
+  "engine": "B",
+  "summary": {
+   "cpuAvgPct": 1.1,
+   "cpuPeakPct": 5.2,
+   "diag": {
+    "mediaExtension": "uk.org.marginal.qlvideo.formatreader",
+    "soun": "lpcm",
+    "vide": "AV1 "
+   },
+   "duration": 20,
+   "engine": "B",
+   "event": "summary",
+   "finalPos": 2,
+   "firstFrameSec": 0.52,
+   "label": "AVPlayer+MKVExt",
+   "media": "av1_1080p.mkv",
+   "memAvgMB": 24.4,
+   "memPeakMB": 27.3,
+   "pid": 25001,
+   "warnings": []
+  },
+  "helpers": [
+   "QLVideo Codecs",
+   "QLVideo Formats",
+   "com.apple.CMExtensionBroker"
+  ],
+  "appAvg": 24.533333333333335,
+  "appPeak": 27.0,
+  "helperAvg": 112.49993489583333,
+  "helperPeak": 276.8291015625,
+  "totalAvg": 137.03326822916668,
+  "totalPeak": 303.8291015625,
+  "appCpu": 1.0653521159109482,
+  "helperCpu": 6.8117968623397,
+  "case": "AV1 MKV (sw on M2)"
+ },
+ {
+  "engine": "C",
+  "summary": {
+   "cpuAvgPct": 27.1,
+   "cpuPeakPct": 73.8,
+   "diag": {
+    "audio": "opus",
+    "hwDecodeSupported": "false",
+    "lead": "v0.1 a0.4 pend v7 a0",
+    "video": "av1",
+    "videoDecoder": "software:libdav1d"
+   },
+   "duration": 20,
+   "engine": "C",
+   "event": "summary",
+   "finalPos": 11.9,
+   "firstFrameSec": 0.08,
+   "label": "FFdemux+AVSBDL",
+   "media": "av1_1080p.mkv",
+   "memAvgMB": 76.9,
+   "memPeakMB": 85.1,
+   "pid": 25166,
+   "warnings": []
+  },
+  "helpers": [],
+  "appAvg": 77.25,
+  "appPeak": 85.0,
+  "helperAvg": 0.0,
+  "helperPeak": 0,
+  "totalAvg": 77.25,
+  "totalPeak": 85.0,
+  "appCpu": 27.10899221168607,
+  "helperCpu": 0.0,
+  "case": "AV1 MKV (sw on M2)"
+ },
+ {
+  "engine": "B",
+  "summary": {
+   "cpuAvgPct": 1.3,
+   "cpuPeakPct": 3.6,
+   "diag": {
+    "mediaExtension": "uk.org.marginal.qlvideo.formatreader",
+    "soun": "lpcm",
+    "vide": "avc1"
+   },
+   "duration": 20,
+   "engine": "B",
+   "event": "summary",
+   "finalPos": 2,
+   "firstFrameSec": 0.43,
+   "label": "AVPlayer+MKVExt",
+   "media": "h264_dts.mkv",
+   "memAvgMB": 24.4,
+   "memPeakMB": 28.1,
+   "pid": 25237,
+   "warnings": []
+  },
+  "helpers": [
+   "QLVideo Formats",
+   "VTDecoderXPCService",
+   "com.apple.CMExtensionBroker"
+  ],
+  "appAvg": 24.4,
+  "appPeak": 28.0,
+  "helperAvg": 37.96471354166667,
+  "helperPeak": 65.5322265625,
+  "totalAvg": 62.36471354166667,
+  "totalPeak": 92.5322265625,
+  "appCpu": 1.2760152754790774,
+  "helperCpu": 1.020812220383262,
+  "case": "H.264 + DTS MKV"
+ },
+ {
+  "engine": "C",
+  "summary": {
+   "cpuAvgPct": 4.6,
+   "cpuPeakPct": 7.9,
+   "diag": {
+    "audio": "dts",
+    "audioDecoder": "software",
+    "hwDecodeSupported": "true",
+    "lead": "v2.0 a0.9 pend v0 a103",
+    "video": "h264"
+   },
+   "duration": 20,
+   "engine": "C",
+   "event": "summary",
+   "finalPos": 11.9,
+   "firstFrameSec": 0.07,
+   "label": "FFdemux+AVSBDL",
+   "media": "h264_dts.mkv",
+   "memAvgMB": 29.2,
+   "memPeakMB": 30.5,
+   "pid": 25431,
+   "warnings": []
+  },
+  "helpers": [
+   "VTDecoderXPCService"
+  ],
+  "appAvg": 29.125,
+  "appPeak": 31.0,
+  "helperAvg": 50.25,
+  "helperPeak": 65.0,
+  "totalAvg": 79.375,
+  "totalPeak": 95.0,
+  "appCpu": 4.614159639713695,
+  "helperCpu": 1.6103107467457194,
+  "case": "H.264 + DTS MKV"
+ }
+]

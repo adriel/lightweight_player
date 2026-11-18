@@ -1,0 +1,31 @@
+== 1080p H.264 MP4 / C
+   total 95 MB (app 29 + helpers 66), peak 105 MB, cpu app 4.5% + helpers 3.5%, first frame 0.09s, pos 22/120.1   {'audio': 'aac', 'hwDecodeSupported': 'true', 'lead': 'v1.3 a1.6 pend v19 a0', 'video': 'h264'}
+== 4K HDR HEVC MP4 / C
+   total 249 MB (app 47 + helpers 202), peak 284 MB, cpu app 4.3% + helpers 2.4%, first frame 0.07s, pos 22/120.3   {'audio': 'aac', 'hwDecodeSupported': 'true', 'lead': 'v2.1 a2.3 pend v10 a0', 'video': 'hevc'}
+== 4K HDR HEVC MKV / B
+   total 353 MB (app 54 + helpers 299), peak 455 MB, cpu app 3.5% + helpers 3.4%, first frame 1.92s, pos 21.8/121.2   {'mediaExtension': 'uk.org.marginal.qlvideo.formatreader', 'soun': 'aac ', 'vide': 'hvc1'}
+== 4K HDR HEVC MKV / C
+   total 246 MB (app 45 + helpers 201), peak 281 MB, cpu app 4.5% + helpers 2.4%, first frame 0.08s, pos 22.1/121.2   {'audio': 'aac', 'hwDecodeSupported': 'true', 'lead': 'v1.6 a1.9 pend v11 a0', 'video': 'hevc'}
+== 4K Remux MKV (DTS-HD, PGS) 9 GB / B
+   total 355 MB (app 72 + helpers 283), peak 457 MB, cpu app 6.3% + helpers 6.0%, first frame 2.07s, pos 146.5/1370.6   {'mediaExtension': 'uk.org.marginal.qlvideo.formatreader', 'soun': 'lpcm', 'vide': 'hvc1'}
+== 4K Remux MKV (DTS-HD, PGS) 9 GB / C
+   total 267 MB (app 61 + helpers 206), peak 349 MB, cpu app 9.9% + helpers 2.2%, first frame 0.07s, pos 147/1370.6   {'audio': 'dts', 'audioDecoder': 'software', 'hwDecodeSupported': 'true', 'lead': 'v1.4 a1.0 pend v0 a38', 'video': 'hevc'}
+== 1080p H.264 MP4 4.5 h 15 GB / C
+   total 205 MB (app 138 + helpers 66), peak 232 MB, cpu app 5.1% + helpers 4.1%, first frame 0.24s, pos 1626.2/16162.6   {'audio': 'aac', 'hwDecodeSupported': 'true', 'lead': 'v1.3 a1.6 pend v18 a0', 'video': 'h264'}
+== Remote HTTPS 1080p MKV / B
+   total 101 MB (app 41 + helpers 60), peak 140 MB, cpu app 36.9% + helpers 10.6%, first frame 7.07s, pos 694.7/1353.7   {'droppedFrames': '11', 'mediaExtension': 'uk.org.marginal.qlvideo.formatreader', 'soun': 'aac ', 'vide': 'avc1'}
+== Remote HTTPS 1080p MKV / C
+   total 122 MB (app 33 + helpers 89), peak 164 MB, cpu app 14.5% + helpers 1.8%, first frame 0.47s, pos 145.3/1353.7   {'audio': 'aac', 'hwDecodeSupported': 'true', 'lead': 'v1.8 a2.1 pend v8 a0', 'video': 'h264'}
+== VP9 WebM / B
+   total 138 MB (app 25 + helpers 113), peak 305 MB, cpu app 1.2% + helpers 6.5%, first frame 0.44s, pos 2/20   {'mediaExtension': 'uk.org.marginal.qlvideo.formatreader', 'soun': 'lpcm', 'vide': 'VP9 '}
+== VP9 WebM / C
+   total 80 MB (app 24 + helpers 56), peak 86 MB, cpu app 3.6% + helpers 1.9%, first frame 0.08s, pos 12/20   {'audio': 'opus', 'hwDecodeSupported': 'true', 'lead': 'v1.3 a1.6 pend v7 a0', 'video': 'vp9'}
+== AV1 MKV (sw on M2) / B
+   total 137 MB (app 25 + helpers 112), peak 304 MB, cpu app 1.1% + helpers 6.8%, first frame 0.52s, pos 2/20   {'mediaExtension': 'uk.org.marginal.qlvideo.formatreader', 'soun': 'lpcm', 'vide': 'AV1 '}
+== AV1 MKV (sw on M2) / C
+   total 77 MB (app 77 + helpers 0), peak 85 MB, cpu app 27.1% + helpers 0.0%, first frame 0.08s, pos 11.9/20   {'audio': 'opus', 'hwDecodeSupported': 'false', 'lead': 'v0.1 a0.4 pend v7 a0', 'video': 'av1', 'videoDecoder': 'software:libdav1d'}
+== H.264 + DTS MKV / B
+   total 62 MB (app 24 + helpers 38), peak 93 MB, cpu app 1.3% + helpers 1.0%, first frame 0.43s, pos 2/20   {'mediaExtension': 'uk.org.marginal.qlvideo.formatreader', 'soun': 'lpcm', 'vide': 'avc1'}
+== H.264 + DTS MKV / C
+   total 79 MB (app 29 + helpers 50), peak 95 MB, cpu app 4.6% + helpers 1.6%, first frame 0.07s, pos 11.9/20   {'audio': 'dts', 'audioDecoder': 'software', 'hwDecodeSupported': 'true', 'lead': 'v2.0 a0.9 pend v0 a103', 'video': 'h264'}
+wrote Bench/results/results.json

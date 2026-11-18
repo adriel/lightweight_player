@@ -134,6 +134,91 @@ final class FFDemuxer {
 
     var bitRate: Int64 { ctx?.pointee.bit_rate ?? 0 }
 
+    /// Static description of the file and decode path for the inspector (call on the demux queue).
+    func mediaInfo() -> MediaInfo {
+        var m = MediaInfo()
+        guard let ctx else { return m }
+        func long(_ id: AVCodecID) -> String { avcodec_descriptor_get(id).flatMap { $0.pointee.long_name.map { String(cString: $0) } } ?? String(cString: avcodec_get_name(id)) }
+        func str(_ p: UnsafePointer<CChar>?) -> String? { p.map { String(cString: $0) } }
+        func tag(_ d: OpaquePointer?, _ k: String) -> String? { av_dict_get(d, k, nil, 0).map { String(cString: $0.pointee.value) } }
+        func layout(_ l: AVChannelLayout) -> String {
+            var l = l; var buf = [CChar](repeating: 0, count: 64)
+            av_channel_layout_describe(&l, &buf, 64)
+            let d = String(cString: buf)
+            return d.hasSuffix("channels") ? InfoFormat.channels(Int(l.nb_channels)) : d
+        }
+        if videoIndex >= 0 {
+            let st = stream(videoIndex).pointee, p = st.codecpar.pointee
+            let fr = av_q2d(st.avg_frame_rate) > 0 ? av_q2d(st.avg_frame_rate) : av_q2d(st.r_frame_rate)
+            var decoder: String
+            if let sw = swVideo { decoder = "\(sw.decoderName) (software, \(sw.threads) threads)" }
+            else if let fd = videoFormat { decoder = InfoFormat.videoDecoder(for: fd) } else { decoder = "—" }
+            var dovi = false
+            for i in 0..<Int(p.nb_coded_side_data) where p.coded_side_data[i].type == AV_PKT_DATA_DOVI_CONF { dovi = true }
+            let fdExt = videoFormat.flatMap { CMFormatDescriptionGetExtensions($0) as? [String: Any] }
+            let fdTransfer = fdExt?[kCVImageBufferTransferFunctionKey as String] as? String
+            let trc = p.color_trc != AVCOL_TRC_UNSPECIFIED ? str(av_color_transfer_name(p.color_trc)) : nil
+            let extradata = p.extradata_size > 0 ? Data(bytes: p.extradata, count: Int(p.extradata_size)) : Data()
+            let cfg = ParamSets.configInfo(extradata, hevc: p.codec_id == AV_CODEC_ID_HEVC, h264: p.codec_id == AV_CODEC_ID_H264)
+            let profile = str(avcodec_profile_name(p.codec_id, p.profile)) ?? cfg.profile.flatMap { str(avcodec_profile_name(p.codec_id, $0)) } ?? "—"
+            let pixfmt = str(av_get_pix_fmt_name(AVPixelFormat(rawValue: p.format))) ?? cfg.pixelFormat ?? "—"
+            let bps = Double(p.bit_rate) > 0 ? Double(p.bit_rate) : Double(tag(st.metadata, "BPS") ?? tag(st.metadata, "BPS-eng") ?? "") ?? 0
+            let dr = dovi ? "Dolby Vision (HDR10 base layer)" : trc == "smpte2084" ? "HDR10 (PQ)" : trc == "arib-std-b67" ? "HDR (HLG)" : InfoFormat.dynamicRange(transfer: fdTransfer)
+            func color(_ name: String?, _ key: CFString) -> String {
+                if let name, name != "unknown", name != "reserved" { return name }
+                return (fdExt?[key as String] as? String).map(InfoFormat.prettyColor) ?? "N/A"
+            }
+            m.video = [("Format", videoCodecName), ("Codec", long(p.codec_id)),
+                       ("Profile", profile),
+                       ("Decoder", decoder), ("Renderer", swVideo == nil ? "AVSampleBufferDisplayLayer (compressed → VideoToolbox)" : "AVSampleBufferDisplayLayer (IOSurface frames)"),
+                       ("Pixel format", pixfmt),
+                       ("Size", "\(p.width)×\(p.height)" + (p.sample_aspect_ratio.num > 0 && p.sample_aspect_ratio.num != p.sample_aspect_ratio.den ? " (SAR \(p.sample_aspect_ratio.num):\(p.sample_aspect_ratio.den))" : "")),
+                       ("Primaries", color(p.color_primaries != AVCOL_PRI_UNSPECIFIED ? str(av_color_primaries_name(p.color_primaries)) : nil, kCVImageBufferColorPrimariesKey)),
+                       ("Transfer", color(trc, kCVImageBufferTransferFunctionKey)),
+                       ("Matrix", color(p.color_space != AVCOL_SPC_UNSPECIFIED ? str(av_color_space_name(p.color_space)) : nil, kCVImageBufferYCbCrMatrixKey)),
+                       ("Range", p.color_range == AVCOL_RANGE_JPEG || (fdExt?[kCMFormatDescriptionExtension_FullRangeVideo as String] as? Bool) == true ? "full" : "limited"),
+                       ("Dynamic range", dr),
+                       ("Bit rate", InfoFormat.bitrate(bps)), ("FPS", InfoFormat.fps(fr))]
+        }
+        if audioIndex >= 0 {
+            let st = stream(audioIndex).pointee, p = st.codecpar.pointee
+            let abps = Double(p.bit_rate) > 0 ? Double(p.bit_rate) : Double(tag(st.metadata, "BPS") ?? tag(st.metadata, "BPS-eng") ?? "") ?? 0
+            m.audio = [("Format", audioCodecName), ("Codec", long(p.codec_id)),
+                       ("Profile", str(avcodec_profile_name(p.codec_id, p.profile)) ?? tag(st.metadata, "title") ?? "—"),
+                       ("Decoder", swAudio != nil ? "FFmpeg \(audioCodecName) (software) → Float32 PCM" + (Settings.shared.dtsCoreOnly && p.codec_id == AV_CODEC_ID_DTS ? ", core only" : "") : "Core Audio (AudioToolbox)"),
+                       ("Renderer", "AVSampleBufferAudioRenderer"),
+                       ("Channels", layout(p.ch_layout)), ("Sample rate", "\(p.sample_rate) Hz"),
+                       ("Bit rate", InfoFormat.bitrate(abps))]
+        }
+        for i in 0..<Int(ctx.pointee.nb_streams) {
+            let st = ctx.pointee.streams[i]!.pointee, p = st.codecpar.pointee
+            let kind = p.codec_type == AVMEDIA_TYPE_VIDEO ? "Video" : p.codec_type == AVMEDIA_TYPE_AUDIO ? "Audio" : p.codec_type == AVMEDIA_TYPE_SUBTITLE ? "Subtitle" : "Data"
+            var rows: [MediaInfo.Row] = [("Codec", long(p.codec_id))]
+            if let l = tag(st.metadata, "language") { rows.append(("Language", l)) }
+            if p.codec_type == AVMEDIA_TYPE_VIDEO { rows.append(("Size", "\(p.width)×\(p.height)")) }
+            if p.codec_type == AVMEDIA_TYPE_AUDIO { rows.append(("Channels", layout(p.ch_layout))); rows.append(("Sample rate", "\(p.sample_rate) Hz")) }
+            var flags: [String] = []
+            if st.disposition & AV_DISPOSITION_DEFAULT != 0 { flags.append("default") }
+            if st.disposition & AV_DISPOSITION_FORCED != 0 { flags.append("forced") }
+            if st.disposition & AV_DISPOSITION_HEARING_IMPAIRED != 0 { flags.append("SDH") }
+            if !flags.isEmpty { rows.append(("Flags", flags.joined(separator: ", "))) }
+            if p.bit_rate > 0 { rows.append(("Bit rate", InfoFormat.bitrate(Double(p.bit_rate)))) }
+            let title = "#\(i) \(String(cString: avcodec_get_name(p.codec_id)))" + (tag(st.metadata, "title").map { " — \($0)" } ?? "")
+            let active = Int32(i) == videoIndex || Int32(i) == audioIndex || Int32(i) == subtitleIndex
+            m.tracks.append(.init(id: i, kind: kind, title: title, rows: rows, active: active))
+        }
+        let fmtName = ctx.pointee.iformat.flatMap { $0.pointee.long_name.map { String(cString: $0) } } ?? "—"
+        m.file = [("Container", fmtName), ("Duration", formatTime(duration)),
+                  ("Overall bit rate", InfoFormat.bitrate(Double(ctx.pointee.bit_rate))),
+                  ("Streams", "\(ctx.pointee.nb_streams)"), ("Chapters", "\(ctx.pointee.nb_chapters)")]
+        var e: UnsafePointer<AVDictionaryEntry>? = nil
+        while let next = av_dict_get(ctx.pointee.metadata, "", e, AV_DICT_IGNORE_SUFFIX) {
+            m.metadata.append((String(cString: next.pointee.key), String(cString: next.pointee.value)))
+            e = UnsafePointer(next)
+        }
+        return m
+    }
+
     deinit {
         if ctx != nil { avformat_close_input(&ctx) }
         if ioContext != nil {
@@ -218,10 +303,13 @@ final class FFDemuxer {
         switch par.codec_id {
         case AV_CODEC_ID_H264:
             codecType = kCMVideoCodecType_H264
+            // Prefer building from the SPS/PPS so CoreMedia parses VUI colour info (HDR flags etc.).
+            if extradata.first == 1, let fd = ParamSets.formatDescription(fromConfig: extradata, hevc: false, extensions: ext) { videoFormat = fd; return }
             if extradata.first == 1 { atoms["avcC"] = extradata }
             else { videoNeedsAnnexBConversion = true; videoFormat = parameterSetFormat(extradata, hevc: false, ext: ext); return }
         case AV_CODEC_ID_HEVC:
             codecType = kCMVideoCodecType_HEVC
+            if extradata.count > 22 && extradata.first == 1, let fd = ParamSets.formatDescription(fromConfig: extradata, hevc: true, extensions: ext) { videoFormat = fd; return }
             if extradata.count > 22 && extradata.first == 1 { atoms["hvcC"] = extradata }
             else { videoNeedsAnnexBConversion = true; videoFormat = parameterSetFormat(extradata, hevc: true, ext: ext); return }
         case AV_CODEC_ID_VP9:
@@ -573,5 +661,96 @@ extension CMSampleBuffer {
     func setAttachment(_ key: CFString, _ value: Bool) {
         guard let atts = CMSampleBufferGetSampleAttachmentsArray(self, createIfNecessary: true) as? [NSMutableDictionary] else { return }
         for a in atts { a[key] = value }
+    }
+}
+
+/// Parameter-set helpers for avcC / hvcC decoder configuration records.
+enum ParamSets {
+    /// Splits an avcC/hvcC record into (NAL length size, parameter-set NAL units).
+    static func extract(_ cfg: Data, hevc: Bool) -> (Int, [Data])? {
+        let b = [UInt8](cfg)
+        var sets: [Data] = []
+        if hevc {
+            guard b.count > 23 else { return nil }
+            let lenSize = Int(b[21] & 3) + 1
+            var p = 23
+            for _ in 0..<Int(b[22]) {
+                guard p + 3 <= b.count else { return nil }
+                let n = Int(b[p + 1]) << 8 | Int(b[p + 2]); p += 3
+                for _ in 0..<n {
+                    guard p + 2 <= b.count else { return nil }
+                    let l = Int(b[p]) << 8 | Int(b[p + 1]); p += 2
+                    guard p + l <= b.count else { return nil }
+                    sets.append(Data(b[p..<(p + l)])); p += l
+                }
+            }
+            return (lenSize, sets)
+        } else {
+            guard b.count > 6 else { return nil }
+            let lenSize = Int(b[4] & 3) + 1
+            var p = 5
+            for group in 0..<2 {
+                guard p < b.count else { break }
+                let n = group == 0 ? Int(b[p] & 0x1f) : Int(b[p]); p += 1
+                for _ in 0..<n {
+                    guard p + 2 <= b.count else { return nil }
+                    let l = Int(b[p]) << 8 | Int(b[p + 1]); p += 2
+                    guard p + l <= b.count else { return nil }
+                    sets.append(Data(b[p..<(p + l)])); p += l
+                }
+            }
+            return (lenSize, sets)
+        }
+    }
+
+    /// Format description built by CoreMedia from the parameter sets (it parses VUI colour / HDR info).
+    /// Container-level extensions (Matroska Colour, mastering metadata) are merged on top.
+    static func formatDescription(fromConfig cfg: Data, hevc: Bool, extensions: [CFString: Any]) -> CMVideoFormatDescription? {
+        guard let (lenSize, sets) = extract(cfg, hevc: hevc), !sets.isEmpty else { return nil }
+        let ptrs = sets.map { d -> UnsafePointer<UInt8> in
+            let p = UnsafeMutablePointer<UInt8>.allocate(capacity: d.count); d.copyBytes(to: p, count: d.count); return UnsafePointer(p)
+        }
+        defer { ptrs.forEach { UnsafeMutablePointer(mutating: $0).deallocate() } }
+        var fd: CMFormatDescription?
+        let st: OSStatus
+        if hevc {
+            st = CMVideoFormatDescriptionCreateFromHEVCParameterSets(allocator: nil, parameterSetCount: sets.count, parameterSetPointers: ptrs, parameterSetSizes: sets.map(\.count),
+                                                                     nalUnitHeaderLength: Int32(lenSize), extensions: extensions.isEmpty ? nil : extensions as CFDictionary, formatDescriptionOut: &fd)
+        } else {
+            st = CMVideoFormatDescriptionCreateFromH264ParameterSets(allocator: nil, parameterSetCount: sets.count, parameterSetPointers: ptrs, parameterSetSizes: sets.map(\.count),
+                                                                     nalUnitHeaderLength: Int32(lenSize), formatDescriptionOut: &fd)
+            if st == noErr, let base = fd, !extensions.isEmpty {
+                // H.264 variant has no extensions parameter: merge container colour info.
+                var merged = (CMFormatDescriptionGetExtensions(base) as? [CFString: Any]) ?? [:]
+                for (k, v) in extensions where merged[k] == nil { merged[k] = v }
+                let dims = CMVideoFormatDescriptionGetDimensions(base)
+                var out: CMFormatDescription?
+                CMVideoFormatDescriptionCreate(allocator: nil, codecType: kCMVideoCodecType_H264, width: dims.width, height: dims.height, extensions: merged as CFDictionary, formatDescriptionOut: &out)
+                return out ?? base
+            }
+        }
+        return st == noErr ? fd : nil
+    }
+
+    /// Profile number and pixel format straight from the configuration record header.
+    static func configInfo(_ cfg: Data, hevc: Bool, h264: Bool) -> (profile: Int32?, pixelFormat: String?) {
+        let b = [UInt8](cfg)
+        if hevc, b.count > 18, b[0] == 1 {
+            let chroma = Int(b[16] & 3), depth = Int(b[17] & 7) + 8
+            let c = ["gray", "420", "422", "444"][chroma]
+            return (Int32(b[1] & 0x1f), "yuv\(c)p" + (depth > 8 ? "\(depth)" : ""))
+        }
+        if h264, b.count > 3, b[0] == 1 {
+            var chroma = 1, depth = 8
+            if [100, 110, 122, 244].contains(Int(b[1])), let (_, sets) = extract(cfg, hevc: false), sets.count > 1 {
+                // High profiles append chroma/bit-depth after the PPS list.
+                var p = 5
+                for g in 0..<2 { let n = g == 0 ? Int(b[p] & 0x1f) : Int(b[p]); p += 1; for _ in 0..<n { p += 2 + (Int(b[p]) << 8 | Int(b[p + 1])) } }
+                if p + 3 <= b.count { chroma = Int(b[p] & 3); depth = Int(b[p + 1] & 7) + 8 }
+            }
+            let c = ["gray", "420", "422", "444"][chroma]
+            return (Int32(b[1]), "yuv\(c)p" + (depth > 8 ? "\(depth)" : ""))
+        }
+        return (nil, nil)
     }
 }

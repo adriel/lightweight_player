@@ -5,16 +5,27 @@ import UniformTypeIdentifiers
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var players: [PlayerWindowController] = []
     private var settingsWindow: NSWindow?
+    private lazy var inspector: InspectorController = {
+        let c = InspectorController()
+        c.currentPlayer = { [weak self] in
+            guard let self else { return nil }
+            return self.players.first { $0.window?.isMainWindow == true } ?? self.players.last { $0.engine != nil }
+        }
+        return c
+    }()
+
+    @objc func toggleInspector(_ sender: Any?) { inspector.toggle() }
     private var openedAtLaunch = false
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.mainMenu = buildMenu()
         // Launch with a path argument (e.g. `open -a LightPlayer file.mkv` goes through application(_:open:)).
-        let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") && $0 != "--settings" }
+        let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
         if let a = args.first { openURLs([a.contains("://") ? URL(string: a)! : URL(fileURLWithPath: a)]) }
         DispatchQueue.main.async { [self] in
             if players.isEmpty && !openedAtLaunch { newPlayer().showWindow(nil) }
             if CommandLine.arguments.contains("--settings") { showSettings(nil) }
+            if CommandLine.arguments.contains("--inspector") { DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.toggleInspector(nil) } }
         }
     }
 
@@ -123,6 +134,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main.addItem(withTitle: "View", action: nil, keyEquivalent: "").submenu = view
 
         let window = NSMenu(title: "Window")
+        window.addItem(item("Inspector", #selector(toggleInspector(_:)), "i", target: self))
+        window.addItem(.separator())
         window.addItem(item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"))
         window.addItem(item("Zoom", #selector(NSWindow.performZoom(_:)), ""))
         main.addItem(withTitle: "Window", action: nil, keyEquivalent: "").submenu = window

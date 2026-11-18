@@ -38,6 +38,10 @@ final class Settings: ObservableObject {
     @Published var subtitleFontSize: Double { didSet { d.set(subtitleFontSize, forKey: "subtitleFontSize") } }
     @Published var loadSidecarSubtitles: Bool { didSet { d.set(loadSidecarSubtitles, forKey: "loadSidecarSubtitles") } }
 
+    /// Play non-native local formats (MKV, AVI, …) through AVPlayer + installed Media Extensions (e.g. QuickLook Video)
+    /// instead of the built-in FFmpeg engine. Falls back automatically if the extension can't open the file.
+    @Published var useMediaExtensions: Bool { didSet { d.set(useMediaExtensions, forKey: "useMediaExtensions") } }
+
     /// DTS-HD MA: decode only the lossy DTS core (much cheaper) instead of the lossless extension.
     @Published var dtsCoreOnly: Bool { didSet { d.set(dtsCoreOnly, forKey: "dtsCoreOnly") } }
 
@@ -51,7 +55,7 @@ final class Settings: ObservableObject {
             "seekStep": 5.0, "longSeekStep": 30.0, "volumeStep": 5.0, "accurateSeek": true, "resumePlayback": true,
             "volume": 1.0, "controlsHideDelay": 2.0,
             "brightness": 0.0, "gamma": 1.0, "contrast": 1.0,
-            "subtitleMode": SubtitleMode.forcedOnly.rawValue, "subtitleFontSize": 1.0, "loadSidecarSubtitles": true, "dtsCoreOnly": false,
+            "subtitleMode": SubtitleMode.forcedOnly.rawValue, "subtitleFontSize": 1.0, "loadSidecarSubtitles": true, "dtsCoreOnly": false, "useMediaExtensions": false,
             "bufferMinutes": 10.0, "maxCacheGB": 8.0, "networkTimeout": 30.0,
         ])
         seekStep = d.double(forKey: "seekStep")
@@ -68,6 +72,7 @@ final class Settings: ObservableObject {
         subtitleFontSize = d.double(forKey: "subtitleFontSize")
         loadSidecarSubtitles = d.bool(forKey: "loadSidecarSubtitles")
         dtsCoreOnly = d.bool(forKey: "dtsCoreOnly")
+        useMediaExtensions = d.bool(forKey: "useMediaExtensions")
         bufferMinutes = d.double(forKey: "bufferMinutes")
         maxCacheGB = d.double(forKey: "maxCacheGB")
         networkTimeout = d.double(forKey: "networkTimeout")

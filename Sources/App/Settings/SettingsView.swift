@@ -36,8 +36,14 @@ private struct GeneralTab: View {
                     Text(String(format: "%.1f s", s.controlsHideDelay)).monospacedDigit().frame(width: 44)
                 }
             }
+            Section {
+                Toggle("Use installed Media Extensions for MKV, AVI, … (e.g. QuickLook Video)", isOn: $s.useMediaExtensions)
+            } header: { Text("Engine") } footer: {
+                Text("Off (recommended): built-in FFmpeg demuxer + VideoToolbox — fastest seeking, lowest memory, disk-buffered streams. On: AVPlayer reads the file through the extension; falls back to the built-in engine if it can't. Network streams always use the built-in engine.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Shortcuts") {
-                Text("Double-click video: full screen · Esc: leave full screen · Space: play/pause · M: mute · S: cycle subtitles · F: full screen")
+                Text("Double-click video: full screen · Esc: leave full screen · Space: play/pause · M: mute · S: cycle subtitles · F: full screen · ⌘I: inspector")
                     .font(.callout).foregroundStyle(.secondary)
             }
         }

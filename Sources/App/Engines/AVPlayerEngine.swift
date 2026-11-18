@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import AVKit
 import MediaToolbox
+import VideoToolbox
 
 /// Engine A (and B when `useMediaExtensions`): AVPlayer rendering into an AVPlayerLayer.
 /// In the app this is used for local MP4/MOV/M4V, where AVFoundation's own demuxer is the leanest.
@@ -25,7 +26,10 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     init(useMediaExtensions: Bool) {
         kind = useMediaExtensions ? .avplayerExt : .avplayer
         if useMediaExtensions && !Self.registeredReaders {
+            // Opt in to installed + enabled Media Extensions: format readers (MKV, AVI, …) and
+            // video decoders (AV1 / VP8 / … without hardware), e.g. from QuickLook Video.
             MTRegisterProfessionalVideoWorkflowFormatReaders()
+            VTRegisterProfessionalVideoWorkflowVideoDecoders()
             Self.registeredReaders = true
         }
         playerLayer = AVPlayerLayer(player: player)
@@ -86,13 +90,17 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
                 self.subtitleAssetTracks[t.trackID] = t
             }
             self._subtitleTracks = subs
+            await self.buildMediaInfo(asset: asset, url: url)
             if let g = try? await asset.loadMediaSelectionGroup(for: .legible) { item.select(nil, in: g) }
             self.observers.append(item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
                 DispatchQueue.main.async {
                     guard let self else { return }
                     switch item.status {
                     case .readyToPlay: if !self.readySent { self.readySent = true; self.onEvent?(.ready) }
-                    case .failed: self.onEvent?(.failed(item.error?.localizedDescription ?? "unknown error"))
+                    case .failed:
+                        // Media Extension missing/disabled/failed: let the built-in engine take over.
+                        if self.kind == .avplayerExt { self.onEvent?(.needsFallback) }
+                        else { self.onEvent?(.failed(item.error?.localizedDescription ?? "unknown error")) }
                     default: break
                     }
                 }
@@ -107,6 +115,84 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         player.replaceCurrentItem(with: item)
     }
     private var readySent = false
+    private var _mediaInfo = MediaInfo()
+    var mediaInfo: MediaInfo { _mediaInfo }
+
+    @MainActor private func buildMediaInfo(asset: AVURLAsset, url: URL) async {
+        var m = MediaInfo()
+        m.engine = kind == .avplayerExt ? "AVFoundation (AVPlayer) + Media Extensions" : "AVFoundation (AVPlayer, QuickTime engine)"
+        let tracks = (try? await asset.load(.tracks)) ?? []
+        let duration = (try? await asset.load(.duration))?.seconds ?? 0
+        for t in tracks {
+            let fd = (try? await t.load(.formatDescriptions))?.first
+            let sub = fd.map { CMFormatDescriptionGetMediaSubType($0) } ?? 0
+            let cc = InfoFormat.fourCC(sub)
+            let name = InfoFormat.codecNames[cc] ?? cc
+            let rate = Double((try? await t.load(.estimatedDataRate)) ?? 0)
+            let lang = try? await t.load(.languageCode)
+            let enabled = (try? await t.load(.isEnabled)) ?? false
+            var rows: [MediaInfo.Row] = [("Codec", name)]
+            if let lang { rows.append(("Language", lang)) }
+            switch t.mediaType {
+            case .video:
+                let size = (try? await t.load(.naturalSize)) ?? .zero
+                let fps = Double((try? await t.load(.nominalFrameRate)) ?? 0)
+                let ext = fd.flatMap { CMFormatDescriptionGetExtensions($0) as? [String: Any] }
+                let depth = (ext?[kCMFormatDescriptionExtension_BitsPerComponent as String] as? Int).map { "\($0)-bit" } ?? "—"
+                rows.append(("Size", "\(Int(size.width))×\(Int(size.height))"))
+                if m.video.isEmpty {
+                    m.video = [("Format", cc), ("Codec", name), ("Decoder", fd.map(InfoFormat.videoDecoder) ?? "—"),
+                               ("Renderer", "AVPlayerLayer"), ("Bit depth", depth),
+                               ("Size", "\(Int(size.width))×\(Int(size.height))")]
+                        + InfoFormat.colorRows(ext) + [("Bit rate", InfoFormat.bitrate(rate)), ("FPS", InfoFormat.fps(fps))]
+                }
+            case .audio:
+                let asbd = fd.flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }
+                let ch = Int(asbd?.mChannelsPerFrame ?? 0)
+                rows.append(("Channels", InfoFormat.channels(ch)))
+                if m.audio.isEmpty {
+                    m.audio = [("Format", cc), ("Codec", name),
+                               ("Decoder", cc == "lpcm" && kind == .avplayerExt ? "Decoded to PCM by the format reader extension" : "Core Audio (AudioToolbox)"),
+                               ("Renderer", "AVPlayer audio"), ("Channels", InfoFormat.channels(ch)),
+                               ("Sample rate", "\(Int(asbd?.mSampleRate ?? 0)) Hz"), ("Bit rate", InfoFormat.bitrate(rate))]
+                }
+            default: break
+            }
+            if rate > 0 { rows.append(("Bit rate", InfoFormat.bitrate(rate))) }
+            let kindName = t.mediaType == .video ? "Video" : t.mediaType == .audio ? "Audio" : (t.mediaType == .subtitle || t.mediaType == .text || t.mediaType == .closedCaption) ? "Subtitle" : "Data"
+            m.tracks.append(.init(id: Int(t.trackID), kind: kindName, title: "#\(t.trackID) \(cc)", rows: rows, active: enabled && kindName != "Subtitle"))
+        }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        m.file = [(url.isFileURL ? "Path" : "URL", InfoFormat.safeURL(url))]
+        if size > 0 { m.file.append(("Size", InfoFormat.bytes(size))) }
+        m.file.append(("Container", url.pathExtension.uppercased()))
+        if let ext = asset.mediaExtensionProperties {
+            m.file.append(("Format reader", "\(ext.extensionName) (\(ext.containingBundleName)) — Media Extension"))
+        } else {
+            m.file.append(("Format reader", "AVFoundation built-in"))
+        }
+        m.file.append(("Duration", formatTime(duration)))
+        if size > 0, duration > 0 { m.file.append(("Overall bit rate", InfoFormat.bitrate(Double(size) * 8 / duration))) }
+        m.file.append(("Streams", "\(tracks.count)"))
+        for item in (try? await asset.load(.commonMetadata)) ?? [] {
+            if let key = item.commonKey?.rawValue, let v = try? await item.load(.stringValue) { m.metadata.append((key, v)) }
+        }
+        _mediaInfo = m
+    }
+
+    func statusRows() -> [MediaInfo.Row] {
+        guard let item = player.currentItem else { return [] }
+        var rows: [MediaInfo.Row] = []
+        if let ahead = item.loadedTimeRanges.map(\.timeRangeValue).first(where: { $0.containsTime(item.currentTime()) }) {
+            rows.append(("Buffered ahead", String(format: "%.1f s", (ahead.end - item.currentTime()).seconds)))
+        }
+        if let e = item.accessLog()?.events.last {
+            rows.append(("Dropped frames", "\(e.numberOfDroppedVideoFrames)"))
+            if e.observedBitrate > 0 { rows.append(("Observed bit rate", InfoFormat.bitrate(e.observedBitrate))) }
+        }
+        rows.append(("Player status", player.timeControlStatus == .waitingToPlayAtSpecifiedRate ? "buffering" : player.timeControlStatus == .playing ? "playing" : "paused"))
+        return rows
+    }
 
     func selectSubtitle(_ id: Int?) {
         subtitleLoad?.cancel()

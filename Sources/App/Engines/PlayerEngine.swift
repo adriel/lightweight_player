@@ -54,6 +54,10 @@ protocol PlayerEngine: AnyObject {
     var bufferedFractions: [ClosedRange<Double>] { get }
     func makePiPController(sampleBufferDelegate: AVPictureInPictureSampleBufferPlaybackDelegate) -> AVPictureInPictureController?
     func appendWarning(_ message: String)
+    /// File / stream / decoder description for the inspector.
+    var mediaInfo: MediaInfo { get }
+    /// Live, engine-specific status rows (buffering, A/V lead, dropped frames…).
+    func statusRows() -> [MediaInfo.Row]
 }
 
 extension PlayerEngine {
@@ -64,6 +68,8 @@ extension PlayerEngine {
     var bufferedFractions: [ClosedRange<Double>] { [] }
     func makePiPController(sampleBufferDelegate: AVPictureInPictureSampleBufferPlaybackDelegate) -> AVPictureInPictureController? { nil }
     func appendWarning(_ message: String) {}
+    var mediaInfo: MediaInfo { MediaInfo() }
+    func statusRows() -> [MediaInfo.Row] { [] }
 }
 
 
@@ -82,5 +88,6 @@ enum EngineEvent {
 func makeEngine(for url: URL) -> PlayerEngine {
     let native: Set<String> = ["mp4", "m4v", "mov", "qt", "3gp"]
     if url.isFileURL && native.contains(url.pathExtension.lowercased()) { return AVPlayerEngine(useMediaExtensions: false) }
+    if url.isFileURL && Settings.shared.useMediaExtensions { return AVPlayerEngine(useMediaExtensions: true) }
     return SampleBufferEngine()
 }

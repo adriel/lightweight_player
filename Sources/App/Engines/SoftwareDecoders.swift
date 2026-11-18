@@ -163,6 +163,7 @@ final class SWVideoDecoder {
     private var poolKey = (0, 0, OSType(0))
     private var format: CMVideoFormatDescription?
     let decoderName: String
+    var threads: Int { Int(ctx?.pointee.thread_count ?? 0) }
 
     init?(par: UnsafeMutablePointer<AVCodecParameters>) {
         let id = par.pointee.codec_id

@@ -42,10 +42,10 @@ targets:
       - path: Sources/Bench
       - path: Sources/Shared
     dependencies:
-      - target: MKVReader
-        embed: true
-        codeSign: true
+      # Our own MKVReader extension isn't embedded: it needs a paid-team entitlement to load and would
+      # conflict with an installed reader (QuickLook Video). Build it separately if you have the entitlement.
       - sdk: MediaToolbox.framework
+      - sdk: VideoToolbox.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lwplayer.LightPlayer.bench

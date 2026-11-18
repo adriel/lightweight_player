@@ -100,7 +100,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             a.informativeText = msg
             a.beginSheetModal(for: window!)
         case .needsFallback:
-            if let u = currentURL { open(u, forceSampleBufferEngine: true) }
+            if let u = currentURL {
+                open(u, forceSampleBufferEngine: true)
+                playerView.flash("Using built-in engine")
+            }
         case .ended:
             if let u = currentURL { settings.setResumePosition(nil, for: resumeKey(u)) }
             showControls()

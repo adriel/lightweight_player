@@ -4,7 +4,9 @@ A low-RAM, hardware-accelerated video player for macOS 27+ on Apple silicon.
 
 ![Player](docs/player.png)
 
-<img src="docs/formats.png" width="560" alt="Formats settings page">
+<img src="docs/inspector.png" width="400" alt="⌘I Inspector"> <img src="docs/formats.png" width="460" alt="Formats settings page">
+
+Press **⌘I** for the inspector: pipeline, decoder actually in use (VideoToolbox hardware / software, dav1d, FFmpeg audio, or a Media Extension), colour/HDR, tracks, file info and live status (buffer, disk cache, download speed, memory, CPU, display EDR headroom).
 
 ## Build
 
@@ -44,11 +46,20 @@ SCHEME=LightBench Bench/build.sh
 | 1080p MP4, 4.5 h, 15 GB | **136 MB** | 192 MB | 438 MB |
 | Remote HTTPS 1080p MKV | — | 80 MB · 6% | 331 MB · 18% |
 
-Engine B (AVPlayer + our Matroska MediaExtension in `Sources/MKVReader`) is implemented but can't run here:
-format-reader extensions need the `com.apple.developer.mediaextension.formatreader` entitlement, which requires a paid
-Apple Developer Program team (without it MediaExtension refuses the reader; with it but no profile, AMFI kills it).
-[QuickLookVideo](https://github.com/Marginal/QuickLookVideo) does the same thing with a paid team: an FFmpeg-based
-format reader extension plus an `MEVideoDecoder` extension for non-native codecs, shipped as a signed DMG. With either
-installed and enabled, engine B costs ≈ A + one extension process, so it can't beat C.
+### Engine B: AVPlayer + Media Extensions (QuickLook Video)
+
+Our own Matroska reader (`Sources/MKVReader`) can't load without a paid-team entitlement, so engine B uses
+[QuickLook Video](https://github.com/Marginal/QuickLookVideo)'s signed format reader + video decoder extensions
+(install the app, enable *QLVideo Formats* / *QLVideo Codecs* in System Settings › Media Extensions). The app calls
+`MTRegisterProfessionalVideoWorkflowFormatReaders()` + `VTRegisterProfessionalVideoWorkflowVideoDecoders()` to opt in.
+
+| Clip (total RAM, first frame) | B AVPlayer + QLVideo | C built-in |
+|---|---|---|
+| 4K HDR HEVC MKV | 353 MB · 1.9 s | **246 MB · 0.08 s** |
+| 4K remux MKV (DTS-HD MA) | 355 MB · 2.1 s | **267 MB · 0.07 s** |
+| Remote HTTPS 1080p MKV | 101 MB · 7.1 s, 47% CPU, dropped frames | **122 MB · 0.47 s** (incl. disk buffer fill) |
+| VP9 / AV1 / DTS short clips | stalled after accurate seeks | played through |
+
+B is available as an opt-in setting (Playback › Engine) and falls back to C automatically if the extension fails.
 
 Re-run: `Bench/run_bench.py --seconds 40` (remote URL read from `Bench/.remote_url`, not committed).

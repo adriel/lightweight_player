@@ -53,6 +53,19 @@ final class SampleBufferEngine: PlayerEngine {
     }
 
     let cues = CueStore()
+    private var _mediaInfo = MediaInfo()
+    var mediaInfo: MediaInfo { _mediaInfo }
+
+    func statusRows() -> [MediaInfo.Row] {
+        var rows: [MediaInfo.Row] = [("A/V read-ahead", String(format: "video %.1f s · audio %.1f s", max(0, lastVideoPTS - currentTime), max(0, lastAudioPTS - currentTime)))]
+        if let s = source?.stats {
+            let bps = s.length > 0 && _duration > 0 ? Double(s.length) / _duration : 0
+            rows.append(("Buffered ahead", InfoFormat.bytes(s.aheadBytes) + (bps > 0 ? String(format: " (%.0f s)", Double(s.aheadBytes) / bps) : "")))
+            rows.append(("Disk cache", InfoFormat.bytes(s.cachedBytes) + " of " + InfoFormat.bytes(s.length)))
+            rows.append(("Download", s.downloading ? InfoFormat.bitrate(s.bytesPerSecond * 8) : "paused (buffer full)"))
+        }
+        return rows
+    }
     private var source: CachedHTTPSource?
     private var _naturalSize = CGSize.zero
     private var _subtitleTracks: [SubtitleTrackInfo] = []
@@ -89,6 +102,13 @@ final class SampleBufferEngine: PlayerEngine {
                     src.readAheadBytes = Int64(bps * Settings.shared.bufferMinutes * 60)
                 }
                 _naturalSize = d.naturalSize
+                var info = d.mediaInfo()
+                info.engine = "FFmpeg demux (libavformat) → AVSampleBuffer renderers" + (src != nil ? " · disk-cached HTTP" : "")
+                info.file.insert((url.isFileURL ? "Path" : "URL", InfoFormat.safeURL(url)), at: 0)
+                let size = src?.length ?? ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0)
+                if size > 0 { info.file.insert(("Size", InfoFormat.bytes(size)), at: 1) }
+                let infoCopy = info
+                DispatchQueue.main.async { self._mediaInfo = infoCopy }
                 _subtitleTracks = d.subtitleStreams
                 demuxer = d
                 _duration = d.duration
