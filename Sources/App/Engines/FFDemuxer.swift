@@ -1,0 +1,577 @@
+import Foundation
+import CoreMedia
+import CoreVideo
+import AudioToolbox
+import VideoToolbox
+import CFFmpeg
+
+/// Thin libavformat wrapper: demux only (no libavcodec decoding). Produces CMFormatDescriptions
+/// and wraps AVPackets as CMSampleBuffers without copying the payload.
+final class FFDemuxer {
+    private(set) var ctx: UnsafeMutablePointer<AVFormatContext>?
+    private(set) var videoIndex: Int32 = -1
+    private(set) var audioIndex: Int32 = -1
+    private(set) var videoFormat: CMVideoFormatDescription?
+    private(set) var audioFormat: CMAudioFormatDescription?
+    private(set) var warnings: [String] = []
+    private(set) var subtitleIndex: Int32 = -1
+    /// Software fallbacks (only created when macOS can't decode the stream itself).
+    private(set) var swVideo: SWVideoDecoder?
+    private(set) var swAudio: SWAudioDecoder?
+    private var swSubtitle: SWSubtitleDecoder?
+    /// Informational messages (e.g. "AV1 decoded in software") — not problems.
+    private(set) var notices: [String] = []
+    private(set) var subtitleStreams: [SubtitleTrackInfo] = []
+    private(set) var videoCodecName = "-"
+    private(set) var audioCodecName = "-"
+    /// True when the video bitstream is Annex-B (start codes) and must be converted to length-prefixed NALUs.
+    private var videoNeedsAnnexBConversion = false
+    private var audioFramesPerPacket: UInt32 = 0
+    private var interruptFlag = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+
+    /// Custom I/O (used for network streams through the disk cache).
+    private var ioContext: UnsafeMutablePointer<AVIOContext>?
+    private var ioBox: Unmanaged<IOBox>?
+
+    convenience init(url: String) throws { try self.init(url: url, source: nil) }
+
+    init(url: String, source: CachedHTTPSource?) throws {
+        interruptFlag.initialize(to: 0)
+        var c: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
+        c?.pointee.interrupt_callback.callback = { opaque in opaque!.assumingMemoryBound(to: Int32.self).pointee }
+        c?.pointee.interrupt_callback.opaque = UnsafeMutableRawPointer(interruptFlag)
+        var opts: OpaquePointer?
+        if let source {
+            let box = Unmanaged.passRetained(IOBox(source))
+            ioBox = box
+            let bufSize: Int32 = 256 * 1024
+            let buf = av_malloc(Int(bufSize))!.assumingMemoryBound(to: UInt8.self)
+            ioContext = avio_alloc_context(buf, bufSize, 0, box.toOpaque(), { opaque, buf, size in
+                let b = Unmanaged<IOBox>.fromOpaque(opaque!).takeUnretainedValue()
+                let n = b.source.read(buf!, count: Int(size), at: b.position)
+                if n > 0 { b.position += Int64(n); return Int32(n) }
+                return n == 0 ? lp_averror_eof() : -5 /* AVERROR(EIO) */
+            }, nil, { opaque, offset, whence in
+                let b = Unmanaged<IOBox>.fromOpaque(opaque!).takeUnretainedValue()
+                switch whence & ~AVSEEK_FORCE {
+                case AVSEEK_SIZE: return b.source.length
+                case SEEK_SET: b.position = offset
+                case SEEK_CUR: b.position += offset
+                case SEEK_END: b.position = b.source.length + offset
+                default: return -1
+                }
+                return b.position
+            })
+            ioContext?.pointee.seekable = AVIO_SEEKABLE_NORMAL
+            c?.pointee.pb = ioContext
+            c?.pointee.flags |= AVFMT_FLAG_CUSTOM_IO
+        } else {
+            av_dict_set(&opts, "reconnect", "1", 0)
+            av_dict_set(&opts, "reconnect_streamed", "1", 0)
+            av_dict_set(&opts, "reconnect_delay_max", "10", 0)
+        }
+        let r = avformat_open_input(&c, source == nil ? url : nil, nil, &opts)
+        av_dict_free(&opts)
+        guard r >= 0, let c else { throw FFError.open(r) }
+        ctx = c
+        // MP4/MKV headers carry full codec parameters; only probe packets when they don't.
+        if needsProbe(c) {
+            c.pointee.probesize = 2_000_000
+            c.pointee.max_analyze_duration = 2 * Int64(AV_TIME_BASE)
+            avformat_find_stream_info(c, nil)
+        }
+        videoIndex = av_find_best_stream(c, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0)
+        audioIndex = av_find_best_stream(c, AVMEDIA_TYPE_AUDIO, -1, videoIndex, nil, 0)
+        // Discard every stream we don't render so libavformat doesn't allocate packets for them.
+        for i in 0..<Int32(c.pointee.nb_streams) where i != videoIndex && i != audioIndex {
+            c.pointee.streams[Int(i)]!.pointee.discard = AVDISCARD_ALL
+        }
+        if videoIndex >= 0 { buildVideoFormat() }
+        if audioIndex >= 0 { buildAudioFormat() }
+        collectSubtitleStreams()
+    }
+
+    private func collectSubtitleStreams() {
+        guard let ctx else { return }
+        let textCodecs: Set<String> = ["subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text", "microdvd", "sami"]
+        let imageCodecs: Set<String> = ["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub", "dvb_teletext"]
+        for i in 0..<Int(ctx.pointee.nb_streams) {
+            let st = ctx.pointee.streams[i]!.pointee
+            guard st.codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE else { continue }
+            let codec = String(cString: avcodec_get_name(st.codecpar.pointee.codec_id))
+            func tag(_ k: String) -> String? { av_dict_get(st.metadata, k, nil, 0).map { String(cString: $0.pointee.value) } }
+            let kind: SubtitleTrackInfo.Kind = textCodecs.contains(codec) ? .text : imageCodecs.contains(codec) ? .image : .unsupported
+            subtitleStreams.append(SubtitleTrackInfo(id: i, title: tag("title") ?? "", language: tag("language"), codec: codec,
+                                                     isForced: st.disposition & AV_DISPOSITION_FORCED != 0,
+                                                     isDefault: st.disposition & AV_DISPOSITION_DEFAULT != 0, kind: kind, externalURL: nil))
+        }
+    }
+
+    /// Enables demuxing of one subtitle stream (others stay discarded). Call on the demux queue.
+    func selectSubtitle(_ index: Int32?) {
+        guard let ctx else { return }
+        if subtitleIndex >= 0 { ctx.pointee.streams[Int(subtitleIndex)]!.pointee.discard = AVDISCARD_ALL }
+        subtitleIndex = index ?? -1
+        swSubtitle = nil
+        if subtitleIndex >= 0 {
+            let st = ctx.pointee.streams[Int(subtitleIndex)]!
+            st.pointee.discard = AVDISCARD_DEFAULT
+            if subtitleStreams.first(where: { $0.id == Int(subtitleIndex) })?.kind == .image {
+                swSubtitle = SWSubtitleDecoder(par: st.pointee.codecpar, videoSize: naturalSize)
+            }
+        }
+    }
+
+    var naturalSize: CGSize {
+        guard videoIndex >= 0 else { return .zero }
+        let par = stream(videoIndex).pointee.codecpar.pointee
+        var w = Double(par.width), h = Double(par.height)
+        let sar = par.sample_aspect_ratio
+        if sar.num > 0 && sar.den > 0 && sar.num != sar.den { w = w * Double(sar.num) / Double(sar.den) }
+        if w <= 0 || h <= 0 { w = 16; h = 9 }
+        return CGSize(width: w, height: h)
+    }
+
+    var bitRate: Int64 { ctx?.pointee.bit_rate ?? 0 }
+
+    deinit {
+        if ctx != nil { avformat_close_input(&ctx) }
+        if ioContext != nil {
+            av_freep(&ioContext!.pointee.buffer)
+            avio_context_free(&ioContext)
+        }
+        ioBox?.release()
+        interruptFlag.deallocate()
+    }
+
+    func interrupt() { interruptFlag.pointee = 1 }
+
+    var duration: Double {
+        guard let ctx else { return 0 }
+        if ctx.pointee.duration > 0 { return Double(ctx.pointee.duration) / Double(AV_TIME_BASE) }
+        // Without avformat_find_stream_info the container duration may be unset; fall back to streams.
+        var best = 0.0
+        for i in 0..<Int(ctx.pointee.nb_streams) {
+            let st = ctx.pointee.streams[i]!.pointee
+            if st.duration > 0 { best = max(best, Double(st.duration) * av_q2d(st.time_base)) }
+        }
+        return best
+    }
+
+    func stream(_ i: Int32) -> UnsafeMutablePointer<AVStream> { ctx!.pointee.streams[Int(i)]! }
+
+    // MARK: Reading
+
+    /// Returns the next packet for the video or audio stream (others are discarded), or nil at EOF/error.
+    func readPacket() -> UnsafeMutablePointer<AVPacket>? {
+        guard let ctx else { return nil }
+        var pkt: UnsafeMutablePointer<AVPacket>? = av_packet_alloc()
+        while true {
+            let r = av_read_frame(ctx, pkt)
+            if r < 0 { av_packet_free(&pkt); return nil }
+            let si = pkt!.pointee.stream_index
+            if si == videoIndex || si == audioIndex || (si == subtitleIndex && subtitleIndex >= 0) { return pkt }
+            av_packet_unref(pkt)
+        }
+    }
+
+    func seek(to seconds: Double) {
+        guard let ctx else { return }
+        let ts = Int64(seconds * Double(AV_TIME_BASE))
+        // Land on the last keyframe at or before the target.
+        avformat_seek_file(ctx, -1, Int64.min, ts, ts, 0)
+        swVideo?.flush(); swAudio?.flush(); swSubtitle?.flush()
+    }
+
+    private func softwareVideo(_ notice: String) {
+        guard let d = SWVideoDecoder(par: stream(videoIndex).pointee.codecpar) else {
+            warnings.append("Video codec \(videoCodecName) can't be decoded; playing audio only.")
+            videoIndex = -1
+            return
+        }
+        swVideo = d
+        notices.append(notice + " (\(d.decoderName))")
+        var fd: CMFormatDescription?
+        CMFormatDescriptionCreate(allocator: nil, mediaType: kCMMediaType_Video, mediaSubType: 0x73776463 /* swdc */, extensions: nil, formatDescriptionOut: &fd)
+        videoFormat = fd
+    }
+
+    // MARK: Format descriptions
+
+    private func needsProbe(_ c: UnsafeMutablePointer<AVFormatContext>) -> Bool {
+        for i in 0..<Int(c.pointee.nb_streams) {
+            let p = c.pointee.streams[i]!.pointee.codecpar!.pointee
+            if p.codec_type == AVMEDIA_TYPE_VIDEO && (p.width == 0 || (p.extradata_size == 0 && (p.codec_id == AV_CODEC_ID_H264 || p.codec_id == AV_CODEC_ID_HEVC))) { return true }
+            if p.codec_type == AVMEDIA_TYPE_AUDIO && (p.sample_rate == 0) { return true }
+        }
+        return c.pointee.nb_streams == 0
+    }
+
+    private func buildVideoFormat() {
+        let par = stream(videoIndex).pointee.codecpar!.pointee
+        videoCodecName = String(cString: avcodec_get_name(par.codec_id))
+        let extradata = par.extradata_size > 0 ? Data(bytes: par.extradata, count: Int(par.extradata_size)) : Data()
+        var ext: [CFString: Any] = colorExtensions(par)
+        var codecType: CMVideoCodecType
+        var atoms: [String: Data] = [:]
+
+        switch par.codec_id {
+        case AV_CODEC_ID_H264:
+            codecType = kCMVideoCodecType_H264
+            if extradata.first == 1 { atoms["avcC"] = extradata }
+            else { videoNeedsAnnexBConversion = true; videoFormat = parameterSetFormat(extradata, hevc: false, ext: ext); return }
+        case AV_CODEC_ID_HEVC:
+            codecType = kCMVideoCodecType_HEVC
+            if extradata.count > 22 && extradata.first == 1 { atoms["hvcC"] = extradata }
+            else { videoNeedsAnnexBConversion = true; videoFormat = parameterSetFormat(extradata, hevc: true, ext: ext); return }
+        case AV_CODEC_ID_VP9:
+            codecType = kCMVideoCodecType_VP9
+            VTRegisterSupplementalVideoDecoderIfAvailable(codecType)
+            if !VTIsHardwareDecodeSupported(codecType) { softwareVideo("VP9 is decoded in software on this Mac"); return }
+            atoms["vpcC"] = makeVPCC(par)
+        case AV_CODEC_ID_AV1:
+            codecType = kCMVideoCodecType_AV1
+            VTRegisterSupplementalVideoDecoderIfAvailable(codecType)
+            if !VTIsHardwareDecodeSupported(codecType) { softwareVideo("AV1 is decoded in software (hardware AV1 needs M3 or newer)"); return }
+            if !extradata.isEmpty { atoms["av1C"] = extradata }
+        case AV_CODEC_ID_PRORES:
+            codecType = par.codec_tag != 0 ? par.codec_tag.bigEndianFourCC : kCMVideoCodecType_AppleProRes422
+        case AV_CODEC_ID_MPEG2VIDEO:
+            codecType = kCMVideoCodecType_MPEG2Video
+        case AV_CODEC_ID_MPEG4:
+            codecType = kCMVideoCodecType_MPEG4Video
+            if !extradata.isEmpty { atoms["esds"] = makeESDS(objectType: 0x20, streamType: 0x11, dsi: extradata) }
+        default:
+            softwareVideo("\(videoCodecName) is decoded in software")
+            return
+        }
+        if !atoms.isEmpty { ext[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms] = atoms }
+        var fd: CMVideoFormatDescription?
+        CMVideoFormatDescriptionCreate(allocator: nil, codecType: codecType, width: par.width, height: par.height,
+                                       extensions: ext as CFDictionary, formatDescriptionOut: &fd)
+        videoFormat = fd
+    }
+
+    /// Build a format description from Annex-B parameter sets (MPEG-TS style extradata).
+    private func parameterSetFormat(_ annexB: Data, hevc: Bool, ext: [CFString: Any]) -> CMVideoFormatDescription? {
+        let nalus = AnnexB.split(annexB)
+        let wanted: Set<UInt8> = hevc ? [32, 33, 34] : [7, 8]
+        let sets = nalus.filter { n in
+            guard let f = n.first else { return false }
+            return wanted.contains(hevc ? (f >> 1) & 0x3f : f & 0x1f)
+        }
+        guard !sets.isEmpty else { return nil }
+        var fd: CMFormatDescription?
+        let ptrs = sets.map { d -> UnsafePointer<UInt8> in
+            let p = UnsafeMutablePointer<UInt8>.allocate(capacity: d.count); d.copyBytes(to: p, count: d.count); return UnsafePointer(p)
+        }
+        defer { ptrs.forEach { UnsafeMutablePointer(mutating: $0).deallocate() } }
+        let sizes = sets.map { $0.count }
+        if hevc {
+            CMVideoFormatDescriptionCreateFromHEVCParameterSets(allocator: nil, parameterSetCount: sets.count, parameterSetPointers: ptrs, parameterSetSizes: sizes, nalUnitHeaderLength: 4, extensions: ext as CFDictionary, formatDescriptionOut: &fd)
+        } else {
+            CMVideoFormatDescriptionCreateFromH264ParameterSets(allocator: nil, parameterSetCount: sets.count, parameterSetPointers: ptrs, parameterSetSizes: sizes, nalUnitHeaderLength: 4, formatDescriptionOut: &fd)
+        }
+        return fd
+    }
+
+    private func buildAudioFormat() {
+        let par = stream(audioIndex).pointee.codecpar!.pointee
+        audioCodecName = String(cString: avcodec_get_name(par.codec_id))
+        let extradata = par.extradata_size > 0 ? Data(bytes: par.extradata, count: Int(par.extradata_size)) : Data()
+        var asbd = AudioStreamBasicDescription()
+        asbd.mSampleRate = Float64(par.sample_rate)
+        asbd.mChannelsPerFrame = UInt32(par.ch_layout.nb_channels)
+        var cookie: Data?
+        switch par.codec_id {
+        case AV_CODEC_ID_AAC:
+            asbd.mFormatID = par.profile == 4 /* HE-AAC */ ? kAudioFormatMPEG4AAC_HE : kAudioFormatMPEG4AAC
+            asbd.mFramesPerPacket = 1024
+            if !extradata.isEmpty { cookie = makeESDS(objectType: 0x40, streamType: 0x15, dsi: extradata) }
+        case AV_CODEC_ID_AC3: asbd.mFormatID = kAudioFormatAC3; asbd.mFramesPerPacket = 1536
+        case AV_CODEC_ID_EAC3: asbd.mFormatID = kAudioFormatEnhancedAC3; asbd.mFramesPerPacket = 1536
+        case AV_CODEC_ID_MP3: asbd.mFormatID = kAudioFormatMPEGLayer3; asbd.mFramesPerPacket = 1152
+        case AV_CODEC_ID_MP2: asbd.mFormatID = kAudioFormatMPEGLayer2; asbd.mFramesPerPacket = 1152
+        case AV_CODEC_ID_ALAC: asbd.mFormatID = kAudioFormatAppleLossless; asbd.mFramesPerPacket = 4096; cookie = extradata
+        case AV_CODEC_ID_FLAC:
+            asbd.mFormatID = kAudioFormatFLAC
+            // 'dfLa' payload: version/flags + STREAMINFO metadata block marked as last.
+            var d = Data([0, 0, 0, 0, 0x80, 0, 0, 34])
+            d.append(extradata.count >= 34 ? extradata.suffix(34) : extradata)
+            cookie = d
+        case AV_CODEC_ID_OPUS:
+            asbd.mFormatID = kAudioFormatOpus; asbd.mFramesPerPacket = 960
+            asbd.mSampleRate = 48000
+            cookie = extradata
+        case AV_CODEC_ID_PCM_S16LE, AV_CODEC_ID_PCM_S24LE, AV_CODEC_ID_PCM_S32LE, AV_CODEC_ID_PCM_F32LE, AV_CODEC_ID_PCM_S16BE, AV_CODEC_ID_PCM_S24BE:
+            let bits: UInt32 = [AV_CODEC_ID_PCM_S16LE, AV_CODEC_ID_PCM_S16BE].contains(par.codec_id) ? 16 :
+                               [AV_CODEC_ID_PCM_S24LE, AV_CODEC_ID_PCM_S24BE].contains(par.codec_id) ? 24 : 32
+            asbd.mFormatID = kAudioFormatLinearPCM
+            asbd.mFormatFlags = (par.codec_id == AV_CODEC_ID_PCM_F32LE ? kAudioFormatFlagIsFloat : kAudioFormatFlagIsSignedInteger) | kAudioFormatFlagIsPacked
+            if [AV_CODEC_ID_PCM_S16BE, AV_CODEC_ID_PCM_S24BE].contains(par.codec_id) { asbd.mFormatFlags |= kAudioFormatFlagIsBigEndian }
+            asbd.mBitsPerChannel = bits
+            asbd.mBytesPerFrame = bits / 8 * asbd.mChannelsPerFrame
+            asbd.mFramesPerPacket = 1
+            asbd.mBytesPerPacket = asbd.mBytesPerFrame
+        default:
+            // DTS, TrueHD, Vorbis, WMA, …: decode with libavcodec to Float32 PCM.
+            let coreOnly = Settings.shared.dtsCoreOnly
+            guard let d = SWAudioDecoder(par: stream(audioIndex).pointee.codecpar, coreOnly: coreOnly) else {
+                warnings.append("Audio codec \(audioCodecName) can't be decoded — playing without sound.")
+                audioIndex = -1
+                return
+            }
+            swAudio = d
+            let profile = par.profile
+            let hd = par.codec_id == AV_CODEC_ID_DTS && profile >= 0 && (avcodec_profile_name(par.codec_id, profile).map { String(cString: $0) } ?? "").contains("HD")
+            notices.append("\(audioCodecName.uppercased()) audio decoded in software" + (hd && coreOnly ? " (DTS core)" : ""))
+            var fd: CMFormatDescription?
+            CMFormatDescriptionCreate(allocator: nil, mediaType: kCMMediaType_Audio, mediaSubType: 0x73776463, extensions: nil, formatDescriptionOut: &fd)
+            audioFormat = fd
+            return
+        }
+        audioFramesPerPacket = asbd.mFramesPerPacket
+        var layout = AudioChannelLayout()
+        layout.mChannelLayoutTag = channelLayoutTag(Int(asbd.mChannelsPerFrame))
+        var fd: CMAudioFormatDescription?
+        let status: OSStatus = cookie.map { c in
+            c.withUnsafeBytes { raw in
+                CMAudioFormatDescriptionCreate(allocator: nil, asbd: &asbd, layoutSize: MemoryLayout<AudioChannelLayout>.size, layout: &layout, magicCookieSize: c.count, magicCookie: raw.baseAddress, extensions: nil, formatDescriptionOut: &fd)
+            }
+        } ?? CMAudioFormatDescriptionCreate(allocator: nil, asbd: &asbd, layoutSize: MemoryLayout<AudioChannelLayout>.size, layout: &layout, magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &fd)
+        if status != noErr { warnings.append("Could not describe audio (\(audioCodecName)): \(status)"); audioIndex = -1 }
+        audioFormat = fd
+    }
+
+    private func channelLayoutTag(_ ch: Int) -> AudioChannelLayoutTag {
+        switch ch {
+        case 1: kAudioChannelLayoutTag_Mono
+        case 2: kAudioChannelLayoutTag_Stereo
+        case 6: kAudioChannelLayoutTag_MPEG_5_1_A
+        case 8: kAudioChannelLayoutTag_MPEG_7_1_C
+        default: kAudioChannelLayoutTag_DiscreteInOrder | AudioChannelLayoutTag(ch)
+        }
+    }
+
+    // MARK: Sample buffers
+
+    /// Pooled allocator for sample payloads: freed blocks are recycled, then returned to the OS
+    /// after ~0.5 s idle, so the malloc heap doesn't keep a fragmented high-water mark of packet data.
+    private let memoryPool = CMMemoryPoolCreate(options: nil)
+
+    /// Converts a packet to a CMSampleBuffer (payload copied into pooled memory) and frees the packet.
+    func makeSampleBuffer(_ pkt: UnsafeMutablePointer<AVPacket>) -> CMSampleBuffer? {
+        defer { var p: UnsafeMutablePointer<AVPacket>? = pkt; av_packet_free(&p) }
+        let si = pkt.pointee.stream_index
+        let isVideo = si == videoIndex
+        guard let fmt: CMFormatDescription = isVideo ? videoFormat : audioFormat, pkt.pointee.size > 0 else { return nil }
+        let tb = stream(si).pointee.time_base
+        let src = UnsafeBufferPointer(start: pkt.pointee.data, count: Int(pkt.pointee.size))
+        let converted: Data? = (isVideo && videoNeedsAnnexBConversion) ? AnnexB.toLengthPrefixed(src) : nil
+        let size = converted?.count ?? src.count
+
+        var block: CMBlockBuffer?
+        guard CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: size, blockAllocator: CMMemoryPoolGetAllocator(memoryPool),
+                                                 customBlockSource: nil, offsetToData: 0, dataLength: size, flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block) == noErr,
+              let block else { return nil }
+        if let converted {
+            converted.withUnsafeBytes { _ = CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: size) }
+        } else {
+            CMBlockBufferReplaceDataBytes(with: src.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: size)
+        }
+
+        let pts = time(pkt.pointee.pts, tb)
+        let dts = time(pkt.pointee.dts, tb)
+        let dur = pkt.pointee.duration > 0 ? time(pkt.pointee.duration, tb) : .invalid
+        var sb: CMSampleBuffer?
+        if isVideo {
+            var timing = CMSampleTimingInfo(duration: dur, presentationTimeStamp: pts.isValid ? pts : dts, decodeTimeStamp: dts)
+            var sz = size
+            CMSampleBufferCreateReady(allocator: nil, dataBuffer: block, formatDescription: fmt, sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 1, sampleSizeArray: &sz, sampleBufferOut: &sb)
+            if let sb, pkt.pointee.flags & AV_PKT_FLAG_KEY == 0 {
+                sb.setAttachment(kCMSampleAttachmentKey_NotSync, true)
+            }
+        } else {
+            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmt)!.pointee
+            if asbd.mFormatID == kAudioFormatLinearPCM {
+                let frames = size / Int(max(asbd.mBytesPerFrame, 1))
+                CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: block, formatDescription: fmt, sampleCount: frames, presentationTimeStamp: pts.isValid ? pts : dts, packetDescriptions: nil, sampleBufferOut: &sb)
+            } else {
+                var desc = AudioStreamPacketDescription(mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(size))
+                CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: block, formatDescription: fmt, sampleCount: 1, presentationTimeStamp: pts.isValid ? pts : dts, packetDescriptions: &desc, sampleBufferOut: &sb)
+            }
+        }
+        return sb
+    }
+
+    enum Item { case video(CMSampleBuffer), audio(CMSampleBuffer), subtitle(SubtitleCue), bitmaps(start: Double, end: Double?, [SubtitleBitmap]) }
+
+    /// Reads and converts the next packet; nil at EOF.
+    func readItem() -> Item? {
+        while let pkt = readPacket() {
+            let si = pkt.pointee.stream_index
+            if si == subtitleIndex {
+                defer { var p: UnsafeMutablePointer<AVPacket>? = pkt; av_packet_free(&p) }
+                let tb = av_q2d(stream(si).pointee.time_base)
+                let start = Double(pkt.pointee.pts == lp_av_nopts() ? pkt.pointee.dts : pkt.pointee.pts) * tb
+                if let sw = swSubtitle {
+                    if let (s, e, bmps) = sw.decode(pkt, start: start) { return .bitmaps(start: s, end: e, bmps) }
+                    continue
+                }
+                let dur = pkt.pointee.duration > 0 ? Double(pkt.pointee.duration) * tb : 4
+                let codec = String(cString: avcodec_get_name(stream(si).pointee.codecpar.pointee.codec_id))
+                let text = SubtitleText.fromPacket(codec: codec, data: Data(bytes: pkt.pointee.data, count: Int(pkt.pointee.size)))
+                if !text.isEmpty { return .subtitle(SubtitleCue(start: start, end: start + dur, text: text)) }
+                continue
+            }
+            let isVideo = si == videoIndex
+            if let sb = makeSampleBuffer(pkt) { return isVideo ? .video(sb) : .audio(sb) }
+        }
+        return nil
+    }
+
+    private func time(_ v: Int64, _ tb: AVRational) -> CMTime {
+        guard v != lp_av_nopts() else { return .invalid }
+        // Rescale to a fixed fine timescale to avoid overflow with odd time bases.
+        return CMTime(value: av_rescale_q(v, tb, AVRational(num: 1, den: 90000)), timescale: 90000)
+    }
+
+    // MARK: Helpers
+
+    private func colorExtensions(_ par: AVCodecParameters) -> [CFString: Any] {
+        var e: [CFString: Any] = [:]
+        switch par.color_primaries {
+        case AVCOL_PRI_BT709: e[kCMFormatDescriptionExtension_ColorPrimaries] = kCMFormatDescriptionColorPrimaries_ITU_R_709_2
+        case AVCOL_PRI_BT2020: e[kCMFormatDescriptionExtension_ColorPrimaries] = kCMFormatDescriptionColorPrimaries_ITU_R_2020
+        case AVCOL_PRI_SMPTE170M, AVCOL_PRI_SMPTE240M: e[kCMFormatDescriptionExtension_ColorPrimaries] = kCMFormatDescriptionColorPrimaries_SMPTE_C
+        case AVCOL_PRI_BT470BG: e[kCMFormatDescriptionExtension_ColorPrimaries] = kCMFormatDescriptionColorPrimaries_EBU_3213
+        case AVCOL_PRI_SMPTE432: e[kCMFormatDescriptionExtension_ColorPrimaries] = kCMFormatDescriptionColorPrimaries_P3_D65
+        default: break
+        }
+        switch par.color_trc {
+        case AVCOL_TRC_BT709, AVCOL_TRC_SMPTE170M, AVCOL_TRC_BT2020_10, AVCOL_TRC_BT2020_12: e[kCMFormatDescriptionExtension_TransferFunction] = kCMFormatDescriptionTransferFunction_ITU_R_709_2
+        case AVCOL_TRC_SMPTE2084: e[kCMFormatDescriptionExtension_TransferFunction] = kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ
+        case AVCOL_TRC_ARIB_STD_B67: e[kCMFormatDescriptionExtension_TransferFunction] = kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG
+        case AVCOL_TRC_IEC61966_2_1: e[kCMFormatDescriptionExtension_TransferFunction] = kCMFormatDescriptionTransferFunction_sRGB
+        default: break
+        }
+        switch par.color_space {
+        case AVCOL_SPC_BT709: e[kCMFormatDescriptionExtension_YCbCrMatrix] = kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2
+        case AVCOL_SPC_BT2020_NCL, AVCOL_SPC_BT2020_CL: e[kCMFormatDescriptionExtension_YCbCrMatrix] = kCMFormatDescriptionYCbCrMatrix_ITU_R_2020
+        case AVCOL_SPC_SMPTE170M, AVCOL_SPC_BT470BG: e[kCMFormatDescriptionExtension_YCbCrMatrix] = kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4
+        default: break
+        }
+        if par.color_range == AVCOL_RANGE_JPEG { e[kCMFormatDescriptionExtension_FullRangeVideo] = true }
+        // HDR10 static metadata, in the big-endian layouts CoreMedia expects (mdcv / clli box payloads).
+        for i in 0..<Int(par.nb_coded_side_data) {
+            let sd = par.coded_side_data[i]
+            if sd.type == AV_PKT_DATA_MASTERING_DISPLAY_METADATA {
+                let m = UnsafeRawPointer(sd.data).assumingMemoryBound(to: AVMasteringDisplayMetadata.self).pointee
+                guard m.has_primaries != 0, m.has_luminance != 0 else { continue }
+                var d = Data()
+                func u16(_ r: AVRational, _ scale: Double) { let v = UInt16(clamping: Int(av_q2d(r) * scale + 0.5)); d.append(UInt8(v >> 8)); d.append(UInt8(v & 0xff)) }
+                func u32(_ r: AVRational, _ scale: Double) { let v = UInt32(clamping: Int(av_q2d(r) * scale + 0.5)); withUnsafeBytes(of: v.bigEndian) { d.append(contentsOf: $0) } }
+                // mdcv order: G, B, R primaries
+                let p = m.display_primaries
+                for c in [p.1, p.2, p.0] { u16(c.0, 50000); u16(c.1, 50000) }
+                u16(m.white_point.0, 50000); u16(m.white_point.1, 50000)
+                u32(m.max_luminance, 10000); u32(m.min_luminance, 10000)
+                e[kCMFormatDescriptionExtension_MasteringDisplayColorVolume] = d
+            } else if sd.type == AV_PKT_DATA_CONTENT_LIGHT_LEVEL {
+                let cll = UnsafeRawPointer(sd.data).assumingMemoryBound(to: UInt32.self) // MaxCLL, MaxFALL (unsigned ints)
+                let maxCLL = UInt16(clamping: cll[0]), maxFALL = UInt16(clamping: cll[1])
+                e[kCMFormatDescriptionExtension_ContentLightLevelInfo] = Data([UInt8(maxCLL >> 8), UInt8(maxCLL & 0xff), UInt8(maxFALL >> 8), UInt8(maxFALL & 0xff)])
+            }
+        }
+        return e
+    }
+
+    private func makeVPCC(_ par: AVCodecParameters) -> Data {
+        let bitDepth: UInt8 = (par.format == AV_PIX_FMT_YUV420P10LE.rawValue || par.format == AV_PIX_FMT_YUV420P10BE.rawValue) ? 10 : 8
+        let chroma: UInt8 = 1 // 4:2:0 colocated with luma
+        let full: UInt8 = par.color_range == AVCOL_RANGE_JPEG ? 1 : 0
+        return Data([1, 0, 0, 0, UInt8(max(par.profile, 0)), UInt8(max(par.level, 0) & 0xff),
+                     (bitDepth << 4) | (chroma << 1) | full,
+                     UInt8(par.color_primaries.rawValue), UInt8(par.color_trc.rawValue), UInt8(par.color_space.rawValue), 0, 0])
+    }
+
+    /// MPEG-4 ES_Descriptor (the 'esds' payload) wrapping a DecoderSpecificInfo.
+    private func makeESDS(objectType: UInt8, streamType: UInt8, dsi: Data) -> Data {
+        func desc(_ tag: UInt8, _ body: Data) -> Data {
+            var d = Data([tag]); let n = body.count
+            d.append(contentsOf: [UInt8(0x80 | ((n >> 21) & 0x7f)), UInt8(0x80 | ((n >> 14) & 0x7f)), UInt8(0x80 | ((n >> 7) & 0x7f)), UInt8(n & 0x7f)])
+            d.append(body); return d
+        }
+        var dcd = Data([objectType, (streamType << 2) | 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        dcd.append(desc(0x05, dsi))
+        var es = Data([0, 0, 0])
+        es.append(desc(0x04, dcd))
+        es.append(desc(0x06, Data([0x02])))
+        var out = Data([0, 0, 0, 0]) // version + flags
+        out.append(desc(0x03, es))
+        return out
+    }
+}
+
+/// State shared with libavformat's custom I/O callbacks.
+final class IOBox {
+    let source: CachedHTTPSource
+    var position: Int64 = 0
+    init(_ s: CachedHTTPSource) { source = s }
+}
+
+enum FFError: Error, CustomStringConvertible {
+    case open(Int32)
+    var description: String {
+        switch self {
+        case .open(let r):
+            var buf = [CChar](repeating: 0, count: 256)
+            av_strerror(r, &buf, 256)
+            return "open failed: \(String(cString: buf))"
+        }
+    }
+}
+
+enum AnnexB {
+    /// Splits an Annex-B byte stream into NAL units (without start codes).
+    static func split(_ data: Data) -> [Data] {
+        data.withUnsafeBytes { raw in split(UnsafeBufferPointer(start: raw.bindMemory(to: UInt8.self).baseAddress, count: raw.count)).map { Data($0) } }
+    }
+    static func split(_ b: UnsafeBufferPointer<UInt8>) -> [UnsafeBufferPointer<UInt8>] {
+        var out: [UnsafeBufferPointer<UInt8>] = []
+        let n = b.count
+        var i = 0, start = -1
+        while i + 2 < n {
+            if b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1 {
+                if start >= 0 {
+                    var end = i
+                    while end > start && b[end - 1] == 0 { end -= 1 }
+                    out.append(UnsafeBufferPointer(rebasing: b[start..<end]))
+                }
+                i += 3; start = i
+            } else { i += 1 }
+        }
+        if start >= 0 && start < n { out.append(UnsafeBufferPointer(rebasing: b[start..<n])) }
+        return out
+    }
+    static func toLengthPrefixed(_ b: UnsafeBufferPointer<UInt8>) -> Data {
+        var out = Data(capacity: b.count + 16)
+        for nal in split(b) {
+            withUnsafeBytes(of: UInt32(nal.count).bigEndian) { out.append(contentsOf: $0) }
+            out.append(contentsOf: nal)
+        }
+        return out
+    }
+}
+
+extension UInt32 {
+    /// libavformat stores codec tags little-endian ('apch' => 0x68637061); CoreMedia wants big-endian FourCC.
+    var bigEndianFourCC: FourCharCode { byteSwapped }
+}
+
+extension CMSampleBuffer {
+    func setAttachment(_ key: CFString, _ value: Bool) {
+        guard let atts = CMSampleBufferGetSampleAttachmentsArray(self, createIfNecessary: true) as? [NSMutableDictionary] else { return }
+        for a in atts { a[key] = value }
+    }
+}

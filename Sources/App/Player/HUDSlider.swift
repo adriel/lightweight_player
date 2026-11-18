@@ -1,0 +1,109 @@
+import AppKit
+
+/// Lightweight custom slider for the HUD: thin track, filled portion, optional buffered spans, and a knob.
+/// Drawn with plain CoreGraphics (no NSSlider cell machinery, no per-frame layer churn).
+final class HUDSlider: NSView {
+    enum KnobStyle { case pill, bar }
+
+    var value: Double = 0 { didSet { if !isDragging { needsDisplay = true } } }
+    var buffered: [ClosedRange<Double>] = [] { didSet { needsDisplay = true } }
+    var knobStyle: KnobStyle = .pill
+    var onChange: ((Double, _ final: Bool) -> Void)?
+    /// Called with the hovered fraction (nil when the mouse leaves) — used for the seek-time tooltip.
+    var onHover: ((Double?) -> Void)?
+    private(set) var isDragging = false
+    private var dragValue: Double = 0
+    private var tracking: NSTrackingArea?
+
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let t = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(t); tracking = t
+    }
+
+    private var trackInset: CGFloat { knobStyle == .pill ? 10 : 4 }
+    private func fraction(at p: NSPoint) -> Double {
+        let w = bounds.width - trackInset * 2
+        return Double(min(max((p.x - trackInset) / max(w, 1), 0), 1))
+    }
+
+    override func draw(_ dirty: NSRect) {
+        let v = isDragging ? dragValue : value
+        let midY = bounds.midY
+        let trackH: CGFloat = 4
+        let x0 = trackInset, w = bounds.width - trackInset * 2
+        let track = NSRect(x: x0, y: midY - trackH / 2, width: w, height: trackH)
+        NSColor.white.withAlphaComponent(0.25).setFill()
+        NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2).fill()
+        NSColor.white.withAlphaComponent(0.25).setFill()
+        for b in buffered {
+            let r = NSRect(x: x0 + w * b.lowerBound, y: track.minY, width: max(1, w * (b.upperBound - b.lowerBound)), height: trackH)
+            NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
+        }
+        NSColor.white.withAlphaComponent(0.85).setFill()
+        NSBezierPath(roundedRect: NSRect(x: x0, y: track.minY, width: w * v, height: trackH), xRadius: 2, yRadius: 2).fill()
+        let kx = x0 + w * v
+        NSColor.white.setFill()
+        switch knobStyle {
+        case .pill:
+            NSBezierPath(roundedRect: NSRect(x: kx - 10, y: midY - 7, width: 20, height: 14), xRadius: 7, yRadius: 7).fill()
+        case .bar:
+            NSBezierPath(roundedRect: NSRect(x: kx - 2, y: midY - 9, width: 4, height: 18), xRadius: 2, yRadius: 2).fill()
+        }
+    }
+
+    override func mouseDown(with e: NSEvent) {
+        isDragging = true
+        dragValue = fraction(at: convert(e.locationInWindow, from: nil))
+        needsDisplay = true
+        onChange?(dragValue, false)
+    }
+    override func mouseDragged(with e: NSEvent) {
+        dragValue = fraction(at: convert(e.locationInWindow, from: nil))
+        needsDisplay = true
+        onChange?(dragValue, false)
+        onHover?(dragValue)
+    }
+    override func mouseUp(with e: NSEvent) {
+        dragValue = fraction(at: convert(e.locationInWindow, from: nil))
+        value = dragValue
+        isDragging = false
+        needsDisplay = true
+        onChange?(dragValue, true)
+    }
+    override func mouseMoved(with e: NSEvent) { onHover?(fraction(at: convert(e.locationInWindow, from: nil))) }
+    override func mouseExited(with e: NSEvent) { onHover?(nil) }
+    override func scrollWheel(with e: NSEvent) {
+        guard knobStyle == .pill else { super.scrollWheel(with: e); return }
+        let delta = Double(e.scrollingDeltaX - e.scrollingDeltaY) * (e.hasPreciseScrollingDeltas ? 0.004 : 0.04)
+        value = min(max(value + delta, 0), 1)
+        onChange?(value, true)
+    }
+}
+
+/// Borderless icon button tinted white, using SF Symbols.
+final class HUDButton: NSButton {
+    convenience init(symbol: String, size: CGFloat, target: AnyObject?, action: Selector) {
+        self.init(frame: .zero)
+        isBordered = false
+        bezelStyle = .regularSquare
+        imagePosition = .imageOnly
+        setSymbol(symbol, size: size)
+        contentTintColor = .white
+        self.target = target
+        self.action = action
+        setButtonType(.momentaryChange)
+        focusRingType = .none
+    }
+    func setSymbol(_ name: String, size: CGFloat) {
+        let cfg = NSImage.SymbolConfiguration(pointSize: size, weight: .regular)
+        image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
+    }
+    override var acceptsFirstResponder: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}

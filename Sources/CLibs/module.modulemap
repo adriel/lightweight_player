@@ -1,0 +1,12 @@
+module CFFmpeg [system] {
+    header "ffmpeg_shim.h"
+    link "avformat"
+    link "avcodec"
+    link "avutil"
+    export *
+}
+module CMPV [system] {
+    header "mpv_shim.h"
+    link "mpv"
+    export *
+}

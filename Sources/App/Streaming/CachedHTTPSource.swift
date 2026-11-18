@@ -1,0 +1,276 @@
+import Foundation
+
+/// Random-access HTTP(S) byte source backed by a sparse temp file on disk.
+///
+/// - The demuxer reads through `read(_:count:at:)`, which blocks until the bytes are on disk.
+/// - A single ranged download runs ahead of the read position until `readAheadBytes` are buffered
+///   (default: 10 minutes at the file's average bitrate), then pauses; it resumes when the buffer drains.
+/// - Seeking outside the downloaded ranges restarts the download at the new position; ranges already
+///   on disk are kept, so seeking back is instant.
+/// - RAM use is constant (one small chunk in flight); the buffer lives in the file system cache/disk.
+final class CachedHTTPSource: @unchecked Sendable {
+    struct Stats { var length: Int64; var cachedBytes: Int64; var aheadBytes: Int64; var downloading: Bool; var bytesPerSecond: Double }
+
+    let url: URL
+    private let authorization: String?
+    private let fileURL: URL
+    private let fd: Int32
+    private let cond = NSCondition()
+    private var ranges = ByteRanges()
+    private(set) var length: Int64 = -1
+    private var readPos: Int64 = 0
+    private var downloadPos: Int64 = 0
+    private var downloadEnd: Int64 = -1          // exclusive end of the current request, -1 = open-ended
+    private var task: URLSessionDataTask?
+    private var taskGeneration = 0
+    private var lastError: Error?
+    private var closed = false
+    private var session: URLSession!
+    private let delegateQueue = OperationQueue()
+    private var rateWindow: [(Date, Int)] = []
+
+    /// Bytes to keep buffered ahead of the read position. Updated by the engine once the bitrate is known.
+    var readAheadBytes: Int64 { get { cond.withLock { _readAhead } } set { cond.withLock { _readAhead = max(newValue, 4 << 20) }; resumeIfNeeded() } }
+    private var _readAhead: Int64 = 64 << 20
+    /// Upper bound on disk used by this stream; old data far behind the playhead is evicted past it.
+    var maxDiskBytes: Int64 = 8 << 30
+    var timeout: TimeInterval = 30
+
+    init(url: URL, cacheDirectory: URL) throws {
+        // Credentials embedded in the URL become a Basic auth header (URLSession won't send them preemptively).
+        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        if let user = comps.user {
+            let pass = comps.password ?? ""
+            authorization = "Basic " + Data("\(user.removingPercentEncoding ?? user):\(pass.removingPercentEncoding ?? pass)".utf8).base64EncodedString()
+            comps.user = nil; comps.password = nil
+        } else { authorization = nil }
+        self.url = comps.url!
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        fileURL = cacheDirectory.appendingPathComponent("stream-\(UUID().uuidString).cache")
+        fd = Darwin.open(fileURL.path, O_RDWR | O_CREAT | O_TRUNC, 0o600)
+        guard fd >= 0 else { throw POSIXError(.EIO) }
+        // Don't let the page cache treat this as precious; we re-read it once.
+        _ = fcntl(fd, F_NOCACHE, 0)
+        delegateQueue.maxConcurrentOperationCount = 1
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.urlCache = nil
+        cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+        cfg.timeoutIntervalForRequest = 30
+        cfg.httpMaximumConnectionsPerHost = 2
+        session = URLSession(configuration: cfg, delegate: SessionDelegate(owner: self), delegateQueue: delegateQueue)
+    }
+
+    deinit { close() }
+
+    /// Starts the first request and waits for the response headers (to learn the total length).
+    func open() throws {
+        cond.lock()
+        startDownload(from: 0)
+        let deadline = Date().addingTimeInterval(timeout)
+        while length < 0 && lastError == nil && !closed {
+            if !cond.wait(until: deadline) { break }
+        }
+        let err = lastError, len = length
+        cond.unlock()
+        if let err { throw err }
+        if len < 0 { throw URLError(.timedOut) }
+    }
+
+    func close() {
+        cond.lock()
+        if closed { cond.unlock(); return }
+        closed = true
+        task?.cancel(); task = nil
+        cond.broadcast()
+        cond.unlock()
+        session?.invalidateAndCancel()
+        Darwin.close(fd)
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    /// Blocking read. Returns bytes read, 0 at EOF, -1 on error/close.
+    func read(_ buffer: UnsafeMutableRawPointer, count: Int, at offset: Int64) -> Int {
+        cond.lock()
+        defer { cond.unlock() }
+        readPos = offset
+        let deadline = Date().addingTimeInterval(timeout)
+        while !closed {
+            if length >= 0 && offset >= length { return 0 }
+            let avail = ranges.contiguous(from: offset)
+            if avail > 0 {
+                let n = Int(min(Int64(count), avail))
+                let r = pread(fd, buffer, n, offset)
+                resumeLocked()
+                return r
+            }
+            // Not on disk: make sure a download is heading here.
+            if task == nil || downloadPos > offset || offset - downloadPos > 2 << 20 {
+                startDownload(from: offset)
+            }
+            if !cond.wait(until: deadline) {
+                if lastError != nil || task == nil { return -1 }
+                return -1
+            }
+        }
+        return -1
+    }
+
+    var stats: Stats {
+        cond.withLock {
+            let now = Date()
+            let recent = rateWindow.filter { now.timeIntervalSince($0.0) < 3 }
+            let bps = Double(recent.reduce(0) { $0 + $1.1 }) / 3
+            return Stats(length: length, cachedBytes: ranges.total, aheadBytes: ranges.contiguous(from: readPos), downloading: task != nil, bytesPerSecond: bps)
+        }
+    }
+
+    /// Downloaded spans as fractions of the file, for drawing the buffer indicator on the seek bar.
+    func bufferedFractions() -> [ClosedRange<Double>] {
+        cond.withLock {
+            guard length > 0 else { return [] }
+            return ranges.spans.map { Double($0.lowerBound) / Double(length)...Double($0.upperBound) / Double(length) }
+        }
+    }
+
+    // MARK: Download control (call with cond locked)
+
+    private func startDownload(from offset: Int64) {
+        task?.cancel()
+        taskGeneration += 1
+        // Don't re-download data we already have: begin at the first missing byte, stop at the next cached span.
+        let start = offset + ranges.contiguous(from: offset)
+        if length >= 0 && start >= length { task = nil; return }
+        let end = ranges.nextStart(after: start).map { $0 } ?? -1
+        var req = URLRequest(url: url)
+        req.setValue(end > 0 ? "bytes=\(start)-\(end - 1)" : "bytes=\(start)-", forHTTPHeaderField: "Range")
+        if let authorization { req.setValue(authorization, forHTTPHeaderField: "Authorization") }
+        let t = session.dataTask(with: req)
+        t.taskDescription = String(taskGeneration)
+        downloadPos = start
+        downloadEnd = end
+        task = t
+        lastError = nil
+        t.resume()
+    }
+
+    private func resumeLocked() {
+        guard task == nil, !closed, length > 0 else { return }
+        let ahead = ranges.contiguous(from: readPos)
+        if readPos + ahead < length && ahead < _readAhead * 9 / 10 {
+            startDownload(from: readPos)
+        }
+    }
+
+    private func resumeIfNeeded() { cond.withLock { resumeLocked() } }
+
+    private func evictIfNeeded() {
+        guard ranges.total > maxDiskBytes else { return }
+        // Drop the spans furthest behind the playhead first (keep 64 MB of history).
+        let keepFrom = max(0, readPos - (64 << 20))
+        for span in ranges.spans where span.upperBound <= keepFrom {
+            punchHole(span.lowerBound, span.upperBound)
+            ranges.remove(span)
+            if ranges.total <= maxDiskBytes * 8 / 10 { break }
+        }
+    }
+
+    private func punchHole(_ start: Int64, _ end: Int64) {
+        var args = fpunchhole_t(fp_flags: 0, reserved: 0, fp_offset: off_t(start), fp_length: off_t(end - start))
+        _ = fcntl(fd, F_PUNCHHOLE, &args)
+    }
+
+    // MARK: URLSession callbacks (delegate queue)
+
+    fileprivate func didReceive(response: URLResponse, generation: Int) -> URLSession.ResponseDisposition {
+        cond.lock(); defer { cond.unlock() }
+        guard generation == taskGeneration, let http = response as? HTTPURLResponse else { return .cancel }
+        if http.statusCode == 206, let cr = http.value(forHTTPHeaderField: "Content-Range"), let total = cr.split(separator: "/").last, let n = Int64(total) {
+            length = n
+        } else if http.statusCode == 200 {
+            // Server ignored Range: the body starts at 0.
+            length = http.expectedContentLength
+            downloadPos = 0
+        } else {
+            lastError = URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
+            task = nil
+            cond.broadcast()
+            return .cancel
+        }
+        cond.broadcast()
+        return .allow
+    }
+
+    fileprivate func didReceive(data: Data, generation: Int) {
+        cond.lock(); defer { cond.unlock() }
+        guard generation == taskGeneration, !closed else { return }
+        let written = data.withUnsafeBytes { pwrite(fd, $0.baseAddress, data.count, downloadPos) }
+        guard written == data.count else { lastError = POSIXError(.EIO); task?.cancel(); task = nil; cond.broadcast(); return }
+        ranges.insert(downloadPos..<(downloadPos + Int64(data.count)))
+        downloadPos += Int64(data.count)
+        rateWindow.append((Date(), data.count))
+        if rateWindow.count > 512 { rateWindow.removeFirst(256) }
+        cond.broadcast()
+        // Pause once enough is buffered ahead of the reader.
+        if downloadPos - readPos > _readAhead && readPos <= downloadPos {
+            task?.cancel(); task = nil
+        }
+        evictIfNeeded()
+    }
+
+    fileprivate func didComplete(error: Error?, generation: Int) {
+        cond.lock(); defer { cond.unlock() }
+        guard generation == taskGeneration else { return }
+        task = nil
+        if let error, (error as? URLError)?.code != .cancelled { lastError = error }
+        cond.broadcast()
+        // A range request that stopped at a cached span: continue after it if the reader still needs data.
+        if lastError == nil { resumeLocked() }
+    }
+
+    private final class SessionDelegate: NSObject, URLSessionDataDelegate {
+        weak var owner: CachedHTTPSource?
+        init(owner: CachedHTTPSource) { self.owner = owner }
+        func urlSession(_ s: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse) async -> URLSession.ResponseDisposition {
+            owner?.didReceive(response: response, generation: Int(dataTask.taskDescription ?? "") ?? -1) ?? .cancel
+        }
+        func urlSession(_ s: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            owner?.didReceive(data: data, generation: Int(dataTask.taskDescription ?? "") ?? -1)
+        }
+        func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            owner?.didComplete(error: error, generation: Int(task.taskDescription ?? "") ?? -1)
+        }
+    }
+}
+
+/// Sorted, merged set of half-open byte ranges.
+struct ByteRanges {
+    private(set) var spans: [Range<Int64>] = []
+    var total: Int64 { spans.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) } }
+
+    mutating func insert(_ r: Range<Int64>) {
+        guard !r.isEmpty else { return }
+        var lo = r.lowerBound, hi = r.upperBound
+        var out: [Range<Int64>] = []
+        var placed = false
+        for s in spans {
+            if s.upperBound < lo { out.append(s) }
+            else if s.lowerBound > hi {
+                if !placed { out.append(lo..<hi); placed = true }
+                out.append(s)
+            } else { lo = min(lo, s.lowerBound); hi = max(hi, s.upperBound) }
+        }
+        if !placed { out.append(lo..<hi) }
+        spans = out
+    }
+
+    mutating func remove(_ r: Range<Int64>) { spans.removeAll { $0 == r } }
+
+    /// Bytes available contiguously starting at `offset` (0 if `offset` isn't cached).
+    func contiguous(from offset: Int64) -> Int64 {
+        for s in spans where s.contains(offset) { return s.upperBound - offset }
+        return 0
+    }
+
+    /// Start of the first cached span strictly after `offset`.
+    func nextStart(after offset: Int64) -> Int64? { spans.first { $0.lowerBound > offset }?.lowerBound }
+}

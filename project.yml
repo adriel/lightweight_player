@@ -1,0 +1,88 @@
+name: LightPlayer
+options:
+  bundleIdPrefix: com.lwplayer
+  deploymentTarget:
+    macOS: "27.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_TEAM: 54T799CP35
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    MACOSX_DEPLOYMENT_TARGET: "27.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    DEAD_CODE_STRIPPING: YES
+targets:
+  LightPlayer:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/App
+      - path: Sources/AppMain
+    dependencies:
+      - sdk: MediaToolbox.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lwplayer.LightPlayer
+        PRODUCT_NAME: LightPlayer
+        INFOPLIST_FILE: Sources/App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/App/LightPlayer.entitlements
+        ENABLE_HARDENED_RUNTIME: NO
+        HEADER_SEARCH_PATHS: /opt/homebrew/include
+        LIBRARY_SEARCH_PATHS: /opt/homebrew/lib
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Sources/CLibs
+        OTHER_LDFLAGS: -lavformat -lavcodec -lavutil
+  LightBench:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/App
+      - path: Sources/Bench
+      - path: Sources/Shared
+    dependencies:
+      - target: MKVReader
+        embed: true
+        codeSign: true
+      - sdk: MediaToolbox.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lwplayer.LightPlayer.bench
+        PRODUCT_NAME: LightBench
+        INFOPLIST_FILE: Sources/App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/App/LightPlayer.entitlements
+        ENABLE_HARDENED_RUNTIME: NO
+        HEADER_SEARCH_PATHS: /opt/homebrew/include
+        LIBRARY_SEARCH_PATHS: /opt/homebrew/lib
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Sources/CLibs
+        OTHER_LDFLAGS: -lavformat -lavcodec -lavutil -lmpv
+  MKVReader:
+    type: extensionkit-extension
+    platform: macOS
+    sources:
+      - path: Sources/MKVReader
+      - path: Sources/Shared
+    dependencies:
+      - sdk: MediaExtension.framework
+      - sdk: ExtensionFoundation.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lwplayer.LightPlayer.bench.MKVReader
+        PRODUCT_NAME: MKVReader
+        INFOPLIST_FILE: Sources/MKVReader/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/MKVReader/MKVReader.entitlements
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        OTHER_LDFLAGS: -e _EXExtensionMain
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/MKVReader/MKVReader-Bridging-Header.h
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks"
+schemes:
+  LightPlayer:
+    build:
+      targets:
+        LightPlayer: all
+  LightBench:
+    build:
+      targets:
+        LightBench: all

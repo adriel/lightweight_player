@@ -1,0 +1,108 @@
+import AppKit
+import Darwin
+
+/// `LightPlayer --bench --engine C --media <path|url> --seconds 45`
+/// Plays the media in a 1280x720 window, exercises seeks, and prints one JSON line per second plus a summary.
+final class BenchRunner: NSObject, NSApplicationDelegate {
+    let engineKind: EngineKind
+    let media: URL
+    let seconds: Double
+    var engine: PlayerEngine!
+    var window: NSWindow!
+    var start = Date()
+    var firstFrameAt: Double?
+    var samples: [(mem: Double, cpu: Double)] = []
+    var lastCPU = BenchRunner.cpuSeconds()
+    var lastWall = Date()
+    var timer: Timer?
+    var failure: String?
+    var seekLog: [String] = []
+
+    init(engine: EngineKind, media: URL, seconds: Double) {
+        engineKind = engine; self.media = media; self.seconds = seconds
+    }
+
+    func applicationDidFinishLaunching(_ n: Notification) {
+        window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1280, height: 720), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = "Bench \(engineKind.label)"
+        engine = makeEngine(engineKind)
+        window.contentView = engine.view
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+        engine.onEvent = { [weak self] ev in
+            guard let self else { return }
+            switch ev {
+            case .ready: self.engine.play()
+            case .firstFrame: if self.firstFrameAt == nil { self.firstFrameAt = Date().timeIntervalSince(self.start) }
+            case .failed(let m): self.failure = m; self.emit(["event": "failed", "message": m])
+            case .ended: self.emit(["event": "ended"])
+            case .needsFallback: self.emit(["event": "needsFallback"])
+            }
+        }
+        start = Date()
+        engine.open(media)
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+    }
+
+    func tick() {
+        let el = Date().timeIntervalSince(start)
+        let cpuNow = Self.cpuSeconds(), wallNow = Date()
+        let cpuPct = (cpuNow - lastCPU) / wallNow.timeIntervalSince(lastWall) * 100
+        lastCPU = cpuNow; lastWall = wallNow
+        let mem = Double(Self.physFootprint()) / 1_048_576
+        if el > 5 { samples.append((mem, cpuPct)) } // skip startup
+        var line: [String: Any] = ["t": round(el), "mem": round1(mem), "cpu": round1(cpuPct), "pos": round1(engine.currentTime)]
+        if ProcessInfo.processInfo.environment["LP_DEBUG"] != nil { line["diag"] = engine.diagnostics() }
+        emit(line)
+
+        // Seek script: three +5s accurate skips, then a jump to 50%, then a jump back to 10%.
+        let e = Int(el)
+        if [15, 16, 17].contains(e) { seekLog.append("+5@\(round1(engine.currentTime))"); engine.seek(to: engine.currentTime + 5, accurate: true) }
+        if e == 22, engine.duration > 0 { engine.seek(to: engine.duration * 0.5, accurate: false) }
+        if e == 30, engine.duration > 0 { engine.seek(to: engine.duration * 0.1, accurate: false) }
+        if el >= seconds { finish() }
+    }
+
+    func finish() {
+        timer?.invalidate()
+        let mems = samples.map(\.mem), cpus = samples.map(\.cpu)
+        var summary: [String: Any] = [
+            "event": "summary", "engine": engineKind.rawValue, "label": engineKind.label, "media": media.lastPathComponent,
+            "pid": getpid(),
+            "memAvgMB": round1(mems.avg), "memPeakMB": round1(mems.max() ?? 0),
+            "cpuAvgPct": round1(cpus.avg), "cpuPeakPct": round1(cpus.max() ?? 0),
+            "firstFrameSec": firstFrameAt.map(round2) ?? -1,
+            "finalPos": round1(engine.currentTime), "duration": round1(engine.duration),
+            "warnings": engine.warnings.map(\.message),
+            "diag": engine.diagnostics(),
+        ]
+        if let failure { summary["failure"] = failure }
+        emit(summary)
+        engine.close()
+        exit(0)
+    }
+
+    func emit(_ obj: [String: Any]) {
+        if let d = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]), let s = String(data: d, encoding: .utf8) {
+            print("BENCH " + s); fflush(stdout)
+        }
+    }
+
+    static func physFootprint() -> UInt64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        }
+        return kr == KERN_SUCCESS ? info.phys_footprint : 0
+    }
+
+    static func cpuSeconds() -> Double {
+        var u = rusage(); getrusage(RUSAGE_SELF, &u)
+        return Double(u.ru_utime.tv_sec + u.ru_stime.tv_sec) + Double(u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1e6
+    }
+}
+
+func round1(_ v: Double) -> Double { (v * 10).rounded() / 10 }
+func round2(_ v: Double) -> Double { (v * 100).rounded() / 100 }
+extension Array where Element == Double { var avg: Double { isEmpty ? 0 : reduce(0, +) / Double(count) } }

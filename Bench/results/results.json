@@ -1,0 +1,38 @@
+[
+ {
+  "engine": "C",
+  "summary": {
+   "cpuAvgPct": 8.7,
+   "cpuPeakPct": 27.1,
+   "diag": {
+    "audio": "aac",
+    "hwDecodeSupported": "true",
+    "lead": "v2.0 a2.2 pend v9 a0",
+    "video": "h264"
+   },
+   "duration": 1353.7,
+   "engine": "C",
+   "event": "summary",
+   "finalPos": 145.3,
+   "firstFrameSec": 0.53,
+   "label": "FFdemux+AVSBDL",
+   "media": "1080p-web.mkv",
+   "memAvgMB": 50,
+   "memPeakMB": 51.3,
+   "pid": 6061,
+   "warnings": []
+  },
+  "helpers": [
+   "VTDecoderXPCService"
+  ],
+  "appAvg": 50.375,
+  "appPeak": 52.0,
+  "helperAvg": 50.1875,
+  "helperPeak": 70.0,
+  "totalAvg": 100.5625,
+  "totalPeak": 122.0,
+  "appCpu": 8.93121787791579,
+  "helperCpu": 1.6435921789220032,
+  "case": "Remote HTTPS 1080p MKV"
+ }
+]
