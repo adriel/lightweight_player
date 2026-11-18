@@ -28,8 +28,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let window = PlayerWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                                   backing: .buffered, defer: false)
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
+        // IINA-style: filename + proxy icon on a dark translucent title bar over the video, hidden with the controls.
+        window.titlebarAppearsTransparent = false
+        window.titleVisibility = .visible
+        window.appearance = NSAppearance(named: .darkAqua)
         window.isMovableByWindowBackground = false
         window.backgroundColor = .black
         window.collectionBehavior = [.fullScreenPrimary, .managed]

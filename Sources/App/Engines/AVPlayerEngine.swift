@@ -287,7 +287,6 @@ final class LayerHostView: NSView {
         layerUsesCoreImageFilters = true
         layerContentsRedrawPolicy = .never
         root.addSublayer(hosted)
-        root.masksToBounds = true
     }
 
     /// Video size + optional crop (normalized, origin top-left). With a crop, the hosted layer is enlarged and
@@ -296,6 +295,8 @@ final class LayerHostView: NSView {
     var crop: CGRect? {
         didSet {
             guard crop != oldValue else { return }
+            // No masksToBounds: the overflow is exactly the black bars and lies outside the window, which clips it
+            // anyway. Masking would force the window server to composite the video every frame (judder risk).
             CATransaction.begin()
             CATransaction.setAnimationDuration(0.3)
             hosted.frame = layoutFrame()
