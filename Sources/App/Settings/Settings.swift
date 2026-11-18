@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 
 /// App preferences, persisted in UserDefaults. Observable so the SwiftUI settings window and the
 /// player stay in sync.
@@ -96,6 +97,21 @@ final class Settings: ObservableObject {
         if let t { dict[key] = t } else { dict.removeValue(forKey: key) }
         if dict.count > 200 { dict = Dictionary(uniqueKeysWithValues: dict.suffix(150).map { ($0.key, $0.value) }) }
         d.set(dict, forKey: "resume")
+    }
+
+    // MARK: Remembered black-bar crops (per file), so they're applied instantly next time.
+
+    /// `.some(nil)` = remembered "no bars"; `nil` = unknown.
+    func rememberedCrop(for key: String) -> CGRect?? {
+        guard let v = d.dictionary(forKey: "crops")?[key] as? String else { return nil }
+        return .some(v == "none" ? nil : NSRectFromString(v))
+    }
+
+    func rememberCrop(_ c: CGRect?, for key: String) {
+        var dict = d.dictionary(forKey: "crops") ?? [:]
+        dict[key] = c.map { NSStringFromRect($0) } ?? "none"
+        if dict.count > 500 { dict = Dictionary(uniqueKeysWithValues: dict.suffix(400).map { ($0.key, $0.value) }) }
+        d.set(dict, forKey: "crops")
     }
 
     var cacheDirectory: URL {

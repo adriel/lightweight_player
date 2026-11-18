@@ -42,6 +42,8 @@ final class SampleBufferEngine: PlayerEngine {
         view = LayerHostView(hosted: displayLayer)
         synchronizer.addRenderer(displayLayer)
         synchronizer.addRenderer(audioRenderer)
+        // Display sync may run the clock at ×1.001; plain resampling is cheapest and inaudible at that ratio.
+        audioRenderer.audioTimePitchAlgorithm = .varispeed
     }
 
     var currentTime: Double { synchronizer.currentTime().seconds.finiteOrZero }
@@ -61,7 +63,7 @@ final class SampleBufferEngine: PlayerEngine {
     }
 
     func statusRows() -> [MediaInfo.Row] {
-        var rows: [MediaInfo.Row] = [("A/V read-ahead", String(format: "video %.1f s · audio %.1f s", max(0, lastVideoPTS - currentTime), max(0, lastAudioPTS - currentTime)))]
+        var rows: [MediaInfo.Row] = [("Display sync", displaySync?.summary ?? "off"), ("A/V read-ahead", String(format: "video %.1f s · audio %.1f s", max(0, lastVideoPTS - currentTime), max(0, lastAudioPTS - currentTime)))]
         if let s = source?.stats {
             let bps = s.length > 0 && _duration > 0 ? Double(s.length) / _duration : 0
             rows.append(("Buffered ahead", InfoFormat.bytes(s.aheadBytes) + (bps > 0 ? String(format: " (%.0f s)", Double(s.aheadBytes) / bps) : "")))
@@ -118,7 +120,12 @@ final class SampleBufferEngine: PlayerEngine {
                 _duration = d.duration
                 let w = d.warnings.map(EngineWarning.init)
                 let n = d.notices
-                DispatchQueue.main.async { self.warnings = w; self.notices = n; self.onEvent?(.ready) }
+                let fr = d.frameRateInfo
+                DispatchQueue.main.async {
+                    self.warnings = w; self.notices = n
+                    if let fr, d.videoIndex >= 0, ProcessInfo.processInfo.environment["LP_NO_DISPLAY_SYNC"] == nil { self.startDisplaySync(fps: fr.fps, base: fr.base) }
+                    self.onEvent?(.ready)
+                }
                 if d.videoIndex < 0 && d.audioIndex < 0 {
                     DispatchQueue.main.async { self.onEvent?(.failed("No playable streams")) }
                     return
@@ -136,7 +143,28 @@ final class SampleBufferEngine: PlayerEngine {
 
     func play() {
         wantsPlay = true
-        synchronizer.setRate(1, time: synchronizer.currentTime())
+        synchronizer.setRate(playRate, time: synchronizer.currentTime())
+    }
+
+    // MARK: Display sync (rate + phase lock to the display refresh; see DisplaySync)
+    private var displaySync: DisplaySync?
+    private var playRate: Float = 1          // main thread
+    private var videoOffset: Double = 0      // feed queue
+    private var queuedRate: Float = 1        // feed queue copy of playRate (no main.sync from the queue)
+
+    private func startDisplaySync(fps: Double, base: Double) {
+        let ds = DisplaySync(view: view, fps: fps, base: base, mediaTimeAtHost: { [weak self] host in
+            guard let self else { return nil }
+            let t = CMSyncConvertTime(CMTime(seconds: host, preferredTimescale: 1_000_000_000), from: CMClockGetHostTimeClock(), to: self.synchronizer.timebase)
+            return t.isValid ? t.seconds : nil
+        }, apply: { [weak self] rate, offset in
+            guard let self else { return }
+            self.playRate = rate
+            if self.synchronizer.rate != 0 { self.synchronizer.setRate(rate, time: self.synchronizer.currentTime()) }
+            self.queue.async { self.videoOffset = offset; self.queuedRate = rate }
+        })
+        displaySync = ds
+        ds.start()
     }
 
     func pause() {
@@ -159,12 +187,14 @@ final class SampleBufferEngine: PlayerEngine {
             seekTarget = accurate ? target : nil
             audioCutoff = accurate ? target : nil
             firstFrameSignaled = false
-            synchronizer.setRate(playing ? 1 : 0, time: CMTime(seconds: target, preferredTimescale: 90000))
+            let rate = playing ? queuedRate : 0
+            synchronizer.setRate(rate, time: CMTime(seconds: target, preferredTimescale: 90000))
             startFeeding()
         }
     }
 
     func close() {
+        displaySync?.stop()
         demuxer?.interrupt()
         source?.close()
         queue.sync {
@@ -226,7 +256,7 @@ final class SampleBufferEngine: PlayerEngine {
             if hide { sb.setAttachment(kCMSampleAttachmentKey_DoNotDisplay, true) }
             lastVideoPTS = max(lastVideoPTS, pts)
             if Self.videoDebug { debugVideo(sb) }
-            videoRenderer.enqueue(sb)
+            videoRenderer.enqueue(videoOffset == 0 ? sb : shifted(sb, by: videoOffset, hide: hide))
             if !firstFrameSignaled && !hide {
                 firstFrameSignaled = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.onEvent?(.firstFrame) }
@@ -299,6 +329,18 @@ final class SampleBufferEngine: PlayerEngine {
             dbgDrift = 0
             fflush(stdout); dbgGaps.removeAll()
         }
+    }
+
+    /// Re-times a video sample by the display-sync phase offset (a few ms).
+    private func shifted(_ sb: CMSampleBuffer, by offset: Double, hide: Bool) -> CMSampleBuffer {
+        var timing = CMSampleTimingInfo(duration: sb.duration, presentationTimeStamp: sb.presentationTimeStamp + CMTime(seconds: offset, preferredTimescale: 1_000_000), decodeTimeStamp: .invalid)
+        var out: CMSampleBuffer?
+        CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: sb, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &out)
+        guard let out else { return sb }
+        if hide { out.setAttachment(kCMSampleAttachmentKey_DoNotDisplay, true) }
+        if let atts = CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false) as? [NSDictionary],
+           atts.first?[kCMSampleAttachmentKey_NotSync] as? Bool == true { out.setAttachment(kCMSampleAttachmentKey_NotSync, true) }
+        return out
     }
 
     private func resumeAudioIfThrottled(_ gen: Int) {

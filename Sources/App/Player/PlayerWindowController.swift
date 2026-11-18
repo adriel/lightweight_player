@@ -163,9 +163,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         cropTimer?.invalidate()
         cropDecider.reset()
         cropSamples = 0
+        // Known file: apply the remembered crop immediately and skip sampling entirely.
+        if let url = currentURL, let known = settings.rememberedCrop(for: resumeKey(url)) {
+            cropRemembered = true
+            applyCrop(settings.autoCrop ? known : nil)
+            return
+        }
+        cropRemembered = false
         applyCrop(nil)
         scheduleCropSample()
     }
+    private var cropRemembered = false
 
     /// Samples at ~2, 6, 15, 40 s after start, then every 2 minutes (scene changes can reveal more picture).
     private func scheduleCropSample() {
@@ -181,6 +189,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             guard let pb else { self?.cropSamples += 1; self?.scheduleCropSample(); return }
             DispatchQueue.global(qos: .utility).async {
                 let r = BlackBarDetector.contentRect(pb)
+                if let dir = ProcessInfo.processInfo.environment["LP_CROP_DEBUG"], let small = BlackBarDetector.downscaled(pb) {
+                    let ci = CIImage(cvPixelBuffer: small)
+                    let url = URL(fileURLWithPath: dir).appendingPathComponent(String(format: "crop_%.1f.png", engine.currentTime))
+                    try? CIContext().writePNGRepresentation(of: ci, to: url, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+                    NSLog("crop sample at %.1f: %@", engine.currentTime, r.map { NSStringFromRect($0) } ?? "nil")
+                }
                 DispatchQueue.main.async {
                     guard let self, self.engine === engine else { return }
                     if let r { self.cropDecider.add(r) }
@@ -193,7 +207,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func updateCrop() {
+        if cropRemembered {
+            // Toggle (C) on a remembered file: just switch the stored crop on/off.
+            let known = currentURL.flatMap { settings.rememberedCrop(for: resumeKey($0)) } ?? nil
+            applyCrop(settings.autoCrop ? known : nil)
+            return
+        }
         let d = settings.autoCrop ? cropDecider.decision : nil
+        // Remember once the initial samples (2/6/15/40 s) are in, or whenever the decision changes later.
+        if settings.autoCrop, let url = currentURL, cropDecider.validSamples >= 4 || (cropDecider.validSamples >= 2 && d != nil) {
+            settings.rememberCrop(d, for: resumeKey(url))
+        }
         func close(_ a: CGRect?, _ b: CGRect?) -> Bool {
             switch (a, b) {
             case (nil, nil): return true
@@ -333,7 +357,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case "m": controlBarToggleMute(); return true
         case "c":
             settings.autoCrop.toggle()
-            if settings.autoCrop && cropDecider.validSamples < 2 { sampleCrop() }
+            if settings.autoCrop && !cropRemembered && cropDecider.validSamples < 2 { sampleCrop() }
             updateCrop()
             playerView.flash(settings.autoCrop ? "Auto-crop on" : "Auto-crop off")
             return true

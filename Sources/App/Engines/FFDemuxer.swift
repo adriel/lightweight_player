@@ -544,6 +544,17 @@ final class FFDemuxer {
             return CMTime(value: Int64(idx) * den, timescale: CMTimeScale(clamping: num)) + baseTime
         }
     }
+    /// Exact frame rate and stream start for display sync (nil for variable / unknown rates).
+    var frameRateInfo: (fps: Double, base: Double)? {
+        if let g = videoGrid { return (Double(g.num) / Double(g.den), g.base) }
+        guard videoIndex >= 0 else { return nil }
+        let st = stream(videoIndex).pointee
+        let fr = st.r_frame_rate
+        guard fr.num > 0, fr.den > 0, av_q2d(fr) > 5, av_q2d(fr) < 241 else { return nil }
+        let start = st.start_time != lp_av_nopts() ? Double(st.start_time) * av_q2d(st.time_base) : 0
+        return (av_q2d(fr), start)
+    }
+
     private lazy var videoGrid: FrameGrid? = {
         guard videoIndex >= 0 else { return nil }
         let st = stream(videoIndex).pointee

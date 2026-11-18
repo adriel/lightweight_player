@@ -95,25 +95,30 @@ extension BlackBarDetector {
     }
 }
 
-/// Accumulates samples over time and decides on a stable crop. Uses the *smallest* crop seen across valid
-/// samples (union of content rects) so a dark scene can never cut into the picture.
+/// Accumulates samples over time and decides on a stable crop: the *least* crop among the samples (so a dark
+/// scene can never cut into the picture), ignoring a single outlier once there are 3+ samples (so one odd frame
+/// can't undo a crop the others agree on).
 struct CropDecider {
-    private(set) var union: CGRect?
-    private(set) var validSamples = 0
+    private(set) var samples: [CGRect] = []
+    var validSamples: Int { samples.count }
 
-    mutating func add(_ r: CGRect) {
-        validSamples += 1
-        union = union.map { $0.union(r) } ?? r
-    }
+    mutating func add(_ r: CGRect) { samples.append(r) }
 
     /// Crop to apply (nil = none). Needs two agreeing samples; tiny crops (< 2%) are ignored.
     var decision: CGRect? {
-        guard validSamples >= 2, let u = union else { return nil }
+        guard samples.count >= 2 else { return nil }
+        var pool = samples.sorted { $0.width * $0.height > $1.width * $1.height }   // least crop first
+        if pool.count >= 3 {
+            let a = pool[0], b = pool[1]
+            let agree = abs(a.width - b.width) < 0.01 && abs(a.height - b.height) < 0.01
+            if !agree { pool.removeFirst() }    // lone outlier
+        }
+        let u = pool.dropFirst().reduce(pool[0]) { $0.union($1) }
         if u.width > 0.98 && u.height > 0.98 { return nil }
         return u
     }
 
-    mutating func reset() { union = nil; validSamples = 0 }
+    mutating func reset() { samples.removeAll() }
 }
 
 enum VideoGeometry {
