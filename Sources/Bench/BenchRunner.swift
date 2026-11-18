@@ -1,5 +1,7 @@
 import AppKit
 import Darwin
+import IOSurface
+import CoreVideo
 
 /// `LightPlayer --bench --engine C --media <path|url> --seconds 45`
 /// Plays the media in a 1280x720 window, exercises seeks, and prints one JSON line per second plus a summary.
@@ -41,7 +43,28 @@ final class BenchRunner: NSObject, NSApplicationDelegate {
         }
         start = Date()
         engine.open(media)
+        if ProcessInfo.processInfo.environment["LP_PACING"] != nil, engine is SampleBufferEngine {
+            let link = engine.view.displayLink(target: self, selector: #selector(vsync(_:)))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+    }
+
+    // Frame pacing: count how many vsyncs each displayed frame stays on screen.
+    var displayLink: CADisplayLink?
+    var lastShown: UInt32 = 0
+    var holds = 0
+    var holdHist: [Int: Int] = [:]
+    @objc func vsync(_ link: CADisplayLink) {
+        guard let e = engine as? SampleBufferEngine, e.isPlaying else { return }
+        guard let pb = e.debugRenderer.displayedPixelBuffer(), let surf = CVPixelBufferGetIOSurface(pb)?.takeUnretainedValue() else { return }
+        let id = IOSurfaceGetID(surf)
+        holds += 1
+        if id != lastShown {
+            if lastShown != 0 { holdHist[holds, default: 0] += 1 }
+            lastShown = id; holds = 0
+        }
     }
 
     func tick() {
@@ -60,6 +83,11 @@ final class BenchRunner: NSObject, NSApplicationDelegate {
         if [15, 16, 17].contains(e) { seekLog.append("+5@\(round1(engine.currentTime))"); engine.seek(to: engine.currentTime + 5, accurate: true) }
         if e == 22, engine.duration > 0 { engine.seek(to: engine.duration * 0.5, accurate: false) }
         if e == 30, engine.duration > 0 { engine.seek(to: engine.duration * 0.1, accurate: false) }
+        if Int(el) % 5 == 0, !holdHist.isEmpty {
+            let fps = displayLink.map { 1 / ($0.targetTimestamp - $0.timestamp) } ?? 0
+            print("PACING display \(Int(fps.rounded())) Hz, vsyncs-per-frame histogram:", holdHist.sorted { $0.key < $1.key }.map { "\($0.key)×\($0.value)" }.joined(separator: " "))
+            fflush(stdout); holdHist.removeAll()
+        }
         if el >= seconds { finish() }
     }
 

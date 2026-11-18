@@ -468,9 +468,18 @@ final class FFDemuxer {
             CMBlockBufferReplaceDataBytes(with: src.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: size)
         }
 
-        let pts = time(pkt.pointee.pts, tb)
-        let dts = time(pkt.pointee.dts, tb)
-        let dur = pkt.pointee.duration > 0 ? time(pkt.pointee.duration, tb) : .invalid
+        var pts = time(pkt.pointee.pts, tb)
+        var dts = time(pkt.pointee.dts, tb)
+        var dur = pkt.pointee.duration > 0 ? time(pkt.pointee.duration, tb) : .invalid
+        if isVideo, let grid = videoGrid {
+            // Shift DTS by the same correction as PTS only when it snaps cleanly; otherwise keep the original
+            // so decode order stays monotonic for B-frame streams.
+            pts = grid.snap(pts)
+            // Without stream probing, coarse-clock containers (Matroska) don't give real decode timestamps for
+            // B-frame streams (dts == pts, out of order). The display layer decodes in enqueue order anyway.
+            dts = .invalid
+            dur = CMTime(value: grid.den, timescale: CMTimeScale(clamping: grid.num))
+        }
         var sb: CMSampleBuffer?
         if isVideo {
             var timing = CMSampleTimingInfo(duration: dur, presentationTimeStamp: pts.isValid ? pts : dts, decodeTimeStamp: dts)
@@ -517,6 +526,43 @@ final class FFDemuxer {
         }
         return nil
     }
+
+    /// Exact constant frame-rate grid for the video stream (e.g. 24000/1001). Matroska stores timestamps rounded to
+    /// 1 ms, so a 41.708 ms frame lands at 41 or 42 ms; on a 60 Hz display that flips frames between vsyncs and turns the
+    /// steady 3:2 cadence into visible judder. Timestamps within 2 ms of the grid are snapped onto it.
+    struct FrameGrid {
+        let num: Int64, den: Int64      // frames per second = num / den
+        let base: Double                // stream start, seconds
+        func snap(_ t: CMTime) -> CMTime {
+            guard t.isValid else { return t }
+            let s = t.seconds - base
+            let idx = (s * Double(num) / Double(den)).rounded()
+            let snapped = idx * Double(den) / Double(num)
+            guard abs(snapped - s) < 0.002 else { return t }    // VFR content / discontinuity: leave alone
+            // Express exactly in a frame-rate timescale (no rounding), offset by the stream start.
+            let baseTime = CMTime(seconds: base, preferredTimescale: CMTimeScale(clamping: num))
+            return CMTime(value: Int64(idx) * den, timescale: CMTimeScale(clamping: num)) + baseTime
+        }
+    }
+    private lazy var videoGrid: FrameGrid? = {
+        guard videoIndex >= 0 else { return nil }
+        let st = stream(videoIndex).pointee
+        let tb = st.time_base
+        // Only needed when the container clock is coarser than ~0.1 ms (Matroska/WebM, FLV, some AVI).
+        guard tb.den > 0, Double(tb.num) / Double(tb.den) >= 0.0001 else { return nil }
+        // Prefer the nominal rate (exact, e.g. 25/1 or 24000/1001) when it agrees with the measured average.
+        var fr = st.r_frame_rate
+        let avg = st.avg_frame_rate
+        if fr.num <= 0 || fr.den <= 0 || (avg.num > 0 && avg.den > 0 && abs(av_q2d(avg) - av_q2d(fr)) / av_q2d(fr) > 0.005) { fr = avg }
+        guard fr.num > 0, fr.den > 0, av_q2d(fr) > 5, av_q2d(fr) < 241 else { return nil }
+        // Encoders sometimes write e.g. 29999/1200 (24.9992) for 25 fps: use the exact standard rate when within 0.01%.
+        let standard: [(Int32, Int32)] = [(24000, 1001), (24, 1), (25, 1), (30000, 1001), (30, 1), (48, 1), (50, 1), (60000, 1001), (60, 1), (100, 1), (120000, 1001), (120, 1)]
+        if let std = standard.first(where: { abs(Double($0.0) / Double($0.1) - av_q2d(fr)) / av_q2d(fr) < 0.0001 }) {
+            fr = AVRational(num: std.0, den: std.1)
+        }
+        let start = st.start_time != lp_av_nopts() ? Double(st.start_time) * av_q2d(tb) : 0
+        return FrameGrid(num: Int64(fr.num), den: Int64(fr.den), base: start)
+    }()
 
     private func time(_ v: Int64, _ tb: AVRational) -> CMTime {
         guard v != lp_av_nopts() else { return .invalid }

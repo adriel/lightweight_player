@@ -221,6 +221,7 @@ final class SampleBufferEngine: PlayerEngine {
             let hide = seekTarget.map { pts + 0.001 < $0 } ?? false
             if hide { sb.setAttachment(kCMSampleAttachmentKey_DoNotDisplay, true) }
             lastVideoPTS = max(lastVideoPTS, pts)
+            if Self.videoDebug { debugVideo(sb) }
             videoRenderer.enqueue(sb)
             if !firstFrameSignaled && !hide {
                 firstFrameSignaled = true
@@ -246,7 +247,9 @@ final class SampleBufferEngine: PlayerEngine {
         let frames = Int64(CMSampleBufferGetNumSamples(sb)) * perPacket
         let pts = sb.presentationTimeStamp.convertScale(rate, method: .roundHalfAwayFromZero)
         var start = pts
-        if let next = audioNext, abs((pts - next).seconds) < 0.1 { start = next }
+        if ProcessInfo.processInfo.environment["LP_NO_AUDIO_RETIME"] != nil { return sb }
+        if let next = audioNext, abs((pts - next).seconds) < 0.1 { start = next } else if audioNext != nil { dbgResyncs += 1 }
+        dbgDrift = max(dbgDrift, abs((start - pts).seconds) * 1000)
         audioNext = start + CMTime(value: frames, timescale: rate)
         guard start != sb.presentationTimeStamp else { return sb }
         var timing = CMSampleTimingInfo(duration: CMTime(value: perPacket, timescale: rate), presentationTimeStamp: start, decodeTimeStamp: .invalid)
@@ -255,8 +258,30 @@ final class SampleBufferEngine: PlayerEngine {
         return out ?? sb
     }
 
+    static let videoDebug = ProcessInfo.processInfo.environment["LP_VIDEO_DEBUG"] != nil
+    private var vdbg: (n: Int, offGrid: Int, nonMono: Int, lastDTS: CMTime, maxErr: Double) = (0, 0, 0, .invalid, 0)
+    private func debugVideo(_ sb: CMSampleBuffer) {
+        let pts = sb.presentationTimeStamp, dts = sb.decodeTimeStamp, d = sb.duration
+        if d.isValid, d.seconds > 0 {
+            let idx = (pts.seconds / d.seconds).rounded()
+            let err = abs(pts.seconds - idx * d.seconds) * 1000
+            vdbg.maxErr = max(vdbg.maxErr, err)
+            if err > 0.001 { vdbg.offGrid += 1 }   // (assumes the stream starts at 0)
+        }
+        if dts.isValid, vdbg.lastDTS.isValid, dts < vdbg.lastDTS { vdbg.nonMono += 1 }
+        if dts.isValid { vdbg.lastDTS = dts }
+        vdbg.n += 1
+        if vdbg.n == 300 {
+            print(String(format: "VIDEODBG 300 frames: off-grid %d (max err %.3f ms), non-monotonic DTS %d, frame %.4f ms", vdbg.offGrid, vdbg.maxErr, vdbg.nonMono, d.seconds * 1000))
+            fflush(stdout); vdbg = (0, 0, 0, vdbg.lastDTS, 0)
+        }
+    }
+
     static let audioDebug = ProcessInfo.processInfo.environment["LP_AUDIO_DEBUG"] != nil
     private var dbgExpected: Double?
+    private var dbgDrift = 0.0, dbgResyncs = 0
+    /// Bench-only: lets the harness sample what's on screen to measure frame pacing.
+    var debugRenderer: AVSampleBufferVideoRenderer { videoRenderer }
     private var dbgGaps: [Double] = []
     private func debugAudio(_ sb: CMSampleBuffer) {
         guard let asbd = sb.formatDescription.flatMap({ CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }) else { return }
@@ -266,7 +291,8 @@ final class SampleBufferEngine: PlayerEngine {
         dbgExpected = pts + n / asbd.mSampleRate
         if dbgGaps.count == 400 {
             let nonzero = dbgGaps.filter { abs($0) > 0.01 }
-            print(String(format: "AUDIODBG fmt=%@ n=%.0f gaps>0.01ms: %d/400, min %.3f max %.3f ms", asbd.mFormatID.fourCCString, n, nonzero.count, dbgGaps.min()!, dbgGaps.max()!))
+            print(String(format: "AUDIODBG fmt=%@ n=%.0f gaps>0.01ms: %d/400, min %.3f max %.3f ms, drift vs container max %.2f ms, resyncs %d", asbd.mFormatID.fourCCString, n, nonzero.count, dbgGaps.min()!, dbgGaps.max()!, dbgDrift, dbgResyncs))
+            dbgDrift = 0
             fflush(stdout); dbgGaps.removeAll()
         }
     }
