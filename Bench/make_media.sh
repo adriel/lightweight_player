@@ -52,3 +52,5 @@ ls -la
 # Image-subtitle clips (PGS from the remux, and the same converted to VobSub), marked forced so they auto-show
 [[ -f pgs_4k.mkv ]] || $FF -ss 120 -t 60 -i "$MKVSRC" -map 0:v:0 -map 0:a:0 -map 0:s:1 -c copy -disposition:s:0 forced pgs_4k.mkv
 [[ -f vobsub_4k.mkv ]] || $FF -i pgs_4k.mkv -map 0:v -map 0:a -map 0:s -c:v copy -c:a copy -c:s dvdsub -disposition:s:0 forced vobsub_4k.mkv
+# Letterboxed 2.39:1 picture inside a 16:9 frame (auto-crop test)
+[[ -f letterbox_239.mkv ]] || $FF -ss 30 -t 30 -i h264_1080p.mp4 -vf "scale=1920:804,pad=1920:1080:0:138:black" -c:v h264_videotoolbox -b:v 8M -c:a copy letterbox_239.mkv

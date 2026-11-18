@@ -78,7 +78,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         guard let engine else { return }
         switch ev {
         case .ready:
+            (engine.view as? LayerHostView)?.videoSize = engine.naturalSize
             sizeWindowToVideo()
+            startCropDetection()
             setupSubtitles()
             if let t = pendingResume, t < engine.duration - 10 {
                 engine.seek(to: t, accurate: false)
@@ -121,7 +123,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func sizeWindowToVideo() {
         guard let window, let engine, !window.styleMask.contains(.fullScreen) else { return }
-        let size = engine.naturalSize
+        let size = displaySize(engine.naturalSize)
         guard size.width > 0, size.height > 0 else { return }
         // fullSizeContentView: the content view covers the whole frame, so frame size == video size.
         window.aspectRatio = size
@@ -136,7 +138,99 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         window.setFrame(NSRect(origin: origin, size: frame.size), display: true, animate: false)
     }
 
+    // MARK: Black-bar crop
+
+    private var cropDecider = CropDecider()
+    private var cropTimer: Timer?
+    private var cropSamples = 0
+    private(set) var appliedCrop: CGRect?
+
+    /// Video size as shown (after crop).
+    private func displaySize(_ s: CGSize) -> CGSize {
+        guard let c = appliedCrop else { return s }
+        return CGSize(width: s.width * c.width, height: s.height * c.height)
+    }
+
+    var cropDescription: String {
+        guard let c = appliedCrop, let size = engine?.naturalSize else { return settings.autoCrop ? "auto (no bars found)" : "off" }
+        let kind = c.width < 0.98 && c.height < 0.98 ? "windowbox" : c.width < 0.98 ? "pillarbox" : "letterbox"
+        return "\(Int(size.width * c.width))×\(Int(size.height * c.height)) — \(kind) removed"
+    }
+
+    private func startCropDetection() {
+        cropTimer?.invalidate()
+        cropDecider.reset()
+        cropSamples = 0
+        applyCrop(nil)
+        scheduleCropSample()
+    }
+
+    /// Samples at ~2, 6, 15, 40 s after start, then every 2 minutes (scene changes can reveal more picture).
+    private func scheduleCropSample() {
+        let delays: [Double] = [2, 4, 9, 25]
+        let d = cropSamples < delays.count ? delays[cropSamples] : 120
+        cropTimer?.invalidate()
+        cropTimer = Timer.scheduledTimer(withTimeInterval: d, repeats: false) { [weak self] _ in self?.sampleCrop() }
+    }
+
+    private func sampleCrop() {
+        guard let engine, settings.autoCrop, engine.isPlaying else { scheduleCropSample(); return }
+        engine.snapshotFrame { [weak self] pb in
+            guard let pb else { self?.cropSamples += 1; self?.scheduleCropSample(); return }
+            DispatchQueue.global(qos: .utility).async {
+                let r = BlackBarDetector.contentRect(pb)
+                DispatchQueue.main.async {
+                    guard let self, self.engine === engine else { return }
+                    if let r { self.cropDecider.add(r) }
+                    self.cropSamples += 1
+                    self.updateCrop()
+                    self.scheduleCropSample()
+                }
+            }
+        }
+    }
+
+    private func updateCrop() {
+        let d = settings.autoCrop ? cropDecider.decision : nil
+        func close(_ a: CGRect?, _ b: CGRect?) -> Bool {
+            switch (a, b) {
+            case (nil, nil): return true
+            case let (x?, y?): return abs(x.minX - y.minX) < 0.005 && abs(x.minY - y.minY) < 0.005 && abs(x.width - y.width) < 0.005 && abs(x.height - y.height) < 0.005
+            default: return false
+            }
+        }
+        guard !close(d, appliedCrop) else { return }
+        NSLog("crop: %@ after %d valid samples", d.map { NSStringFromRect($0) } ?? "none", cropDecider.validSamples)
+        applyCrop(d)
+        if d != nil { playerView.flash("Cropped black bars") }
+    }
+
+    private func applyCrop(_ c: CGRect?) {
+        appliedCrop = c
+        (engine?.view as? LayerHostView)?.crop = c
+        playerView.crop = c
+        adjustWindowAspect()
+    }
+
+    /// Keep the window height and change its width to the (cropped) video aspect.
+    private func adjustWindowAspect() {
+        guard let window, let engine, !window.styleMask.contains(.fullScreen) else { return }
+        let size = displaySize(engine.naturalSize)
+        guard size.width > 0, size.height > 0 else { return }
+        window.aspectRatio = size
+        let screen = (window.screen ?? NSScreen.main)!.visibleFrame
+        var f = window.frame
+        let w = min(f.height * size.width / size.height, screen.width)
+        let h = w * size.height / size.width
+        f.origin.x += (f.width - w) / 2
+        f.origin.y += (f.height - h) / 2
+        f.size = NSSize(width: w.rounded(), height: h.rounded())
+        f.origin.x = min(max(f.origin.x, screen.minX), screen.maxX - f.width)
+        window.animator().setFrame(f, display: true)
+    }
+
     private func closeEngine() {
+        cropTimer?.invalidate()
         pip?.stopPictureInPicture()
         pip = nil
         engine?.close()
@@ -235,6 +329,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         switch e.charactersIgnoringModifiers?.lowercased() {
         case "f": window?.toggleFullScreen(nil); return true
         case "m": controlBarToggleMute(); return true
+        case "c":
+            settings.autoCrop.toggle()
+            if settings.autoCrop && cropDecider.validSamples < 2 { sampleCrop() }
+            updateCrop()
+            playerView.flash(settings.autoCrop ? "Auto-crop on" : "Auto-crop off")
+            return true
         case "s": cycleSubtitles(); return true
         default: return false
         }

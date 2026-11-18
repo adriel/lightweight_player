@@ -43,7 +43,7 @@ private struct GeneralTab: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Shortcuts") {
-                Text("Double-click video: full screen · Esc: leave full screen · Space: play/pause · M: mute · S: cycle subtitles · F: full screen · ⌘I: inspector")
+                Text("Double-click video: full screen · Esc: leave full screen · Space: play/pause · M: mute · S: cycle subtitles · C: toggle black-bar crop · F: full screen · ⌘I: inspector")
                     .font(.callout).foregroundStyle(.secondary)
             }
         }
@@ -55,6 +55,12 @@ private struct VideoTab: View {
     @EnvironmentObject var s: Settings
     var body: some View {
         Form {
+            Section {
+                Toggle("Automatically crop black bars (letterbox / pillarbox)", isOn: $s.autoCrop)
+            } footer: {
+                Text("Samples a few on-screen frames, crops only when two samples agree, and never more than the least-cropped sample. Toggle with C while playing.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section {
                 slider("Brightness", $s.brightness, -0.5...0.5, "%+.2f")
                 slider("Contrast", $s.contrast, 0.5...1.5, "%.2f")

@@ -56,6 +56,10 @@ final class SampleBufferEngine: PlayerEngine {
     private var _mediaInfo = MediaInfo()
     var mediaInfo: MediaInfo { _mediaInfo }
 
+    func snapshotFrame(_ completion: @escaping (CVPixelBuffer?) -> Void) {
+        completion(videoRenderer.displayedPixelBuffer())
+    }
+
     func statusRows() -> [MediaInfo.Row] {
         var rows: [MediaInfo.Row] = [("A/V read-ahead", String(format: "video %.1f s · audio %.1f s", max(0, lastVideoPTS - currentTime), max(0, lastAudioPTS - currentTime)))]
         if let s = source?.stats {

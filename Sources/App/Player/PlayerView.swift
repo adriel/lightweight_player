@@ -23,6 +23,8 @@ final class PlayerView: NSView {
     private let bitmapLayer = CALayer()
     private var shownBitmaps: [SubtitleBitmap] = []
     private var bitmapVideoSize = CGSize.zero
+    /// Current black-bar crop (normalized, top-left origin); image subtitles follow it.
+    var crop: CGRect? { didSet { if crop != oldValue { layoutBitmaps() } } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -120,14 +122,18 @@ final class PlayerView: NSView {
         bitmapLayer.frame = bounds
         let subs = bitmapLayer.sublayers ?? []
         guard !shownBitmaps.isEmpty, bitmapVideoSize.width > 0, bitmapVideoSize.height > 0 else { subs.forEach { $0.removeFromSuperlayer() }; return }
-        let scale = min(bounds.width / bitmapVideoSize.width, bounds.height / bitmapVideoSize.height)
-        let vw = bitmapVideoSize.width * scale, vh = bitmapVideoSize.height * scale
-        let video = CGRect(x: (bounds.width - vw) / 2, y: (bounds.height - vh) / 2, width: vw, height: vh)
+        let video = VideoGeometry.frameRect(bounds: bounds, videoSize: bitmapVideoSize, crop: crop)
         for (i, b) in shownBitmaps.enumerated() {
             let l = i < subs.count ? subs[i] : { let n = CALayer(); n.contentsGravity = .resize; bitmapLayer.addSublayer(n); return n }()
             l.contents = b.image
-            l.frame = CGRect(x: video.minX + b.rect.minX * video.width, y: video.maxY - b.rect.maxY * video.height,
-                             width: b.rect.width * video.width, height: b.rect.height * video.height)
+            var f = CGRect(x: video.minX + b.rect.minX * video.width, y: video.maxY - b.rect.maxY * video.height,
+                           width: b.rect.width * video.width, height: b.rect.height * video.height)
+            // Subtitles authored inside a (now cropped) bar: pull them back into view.
+            if f.minY < 8 { f.origin.y = 8 }
+            if f.maxY > bounds.height - 8 { f.origin.y = bounds.height - 8 - f.height }
+            if f.minX < 0 { f.origin.x = 0 }
+            if f.maxX > bounds.width { f.origin.x = bounds.width - f.width }
+            l.frame = f
         }
         for l in subs.dropFirst(shownBitmaps.count) { l.removeFromSuperlayer() }
     }

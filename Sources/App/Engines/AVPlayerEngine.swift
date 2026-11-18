@@ -180,6 +180,20 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         _mediaInfo = m
     }
 
+    /// Attaches a video output only for the moment we need one frame (an attached output makes AVPlayer keep
+    /// extra decoded frames around, so it's never left on).
+    func snapshotFrame(_ completion: @escaping (CVPixelBuffer?) -> Void) {
+        guard let item = player.currentItem else { completion(nil); return }
+        let out = AVPlayerItemVideoOutput(pixelBufferAttributes: nil)
+        item.add(out)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            let t = out.itemTime(forHostTime: CACurrentMediaTime())
+            let pb = out.copyPixelBuffer(forItemTime: t, itemTimeForDisplay: nil)
+            item.remove(out)
+            completion(pb)
+        }
+    }
+
     func statusRows() -> [MediaInfo.Row] {
         guard let item = player.currentItem else { return [] }
         var rows: [MediaInfo.Row] = []
@@ -273,6 +287,25 @@ final class LayerHostView: NSView {
         layerUsesCoreImageFilters = true
         layerContentsRedrawPolicy = .never
         root.addSublayer(hosted)
+        root.masksToBounds = true
+    }
+
+    /// Video size + optional crop (normalized, origin top-left). With a crop, the hosted layer is enlarged and
+    /// offset so only the cropped part is visible (the root layer clips).
+    var videoSize: CGSize = .zero { didSet { if videoSize != oldValue { needsLayout = true } } }
+    var crop: CGRect? {
+        didSet {
+            guard crop != oldValue else { return }
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.3)
+            hosted.frame = layoutFrame()
+            CATransaction.commit()
+        }
+    }
+
+    private func layoutFrame() -> CGRect {
+        guard crop != nil, videoSize.width > 0 else { return bounds }
+        return VideoGeometry.frameRect(bounds: bounds, videoSize: videoSize, crop: crop)
     }
 
     /// Brightness/contrast/gamma as Core Image layer filters. Filters are removed entirely at default
@@ -305,7 +338,7 @@ final class LayerHostView: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        hosted.frame = bounds
+        hosted.frame = layoutFrame()
         CATransaction.commit()
     }
 }

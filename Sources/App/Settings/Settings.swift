@@ -33,6 +33,9 @@ final class Settings: ObservableObject {
     @Published var gamma: Double { didSet { d.set(gamma, forKey: "gamma") } }                  // 0.5 ... 2.0
     @Published var contrast: Double { didSet { d.set(contrast, forKey: "contrast") } }         // 0.5 ... 1.5
 
+    /// Detect letterbox / pillarbox bars and crop them away.
+    @Published var autoCrop: Bool { didSet { d.set(autoCrop, forKey: "autoCrop") } }
+
     // Subtitles
     @Published var subtitleMode: SubtitleMode { didSet { d.set(subtitleMode.rawValue, forKey: "subtitleMode") } }
     @Published var subtitleFontSize: Double { didSet { d.set(subtitleFontSize, forKey: "subtitleFontSize") } }
@@ -54,7 +57,7 @@ final class Settings: ObservableObject {
         d.register(defaults: [
             "seekStep": 5.0, "longSeekStep": 30.0, "volumeStep": 5.0, "accurateSeek": true, "resumePlayback": true,
             "volume": 1.0, "controlsHideDelay": 2.0,
-            "brightness": 0.0, "gamma": 1.0, "contrast": 1.0,
+            "autoCrop": true, "brightness": 0.0, "gamma": 1.0, "contrast": 1.0,
             "subtitleMode": SubtitleMode.forcedOnly.rawValue, "subtitleFontSize": 1.0, "loadSidecarSubtitles": true, "dtsCoreOnly": false, "useMediaExtensions": false,
             "bufferMinutes": 10.0, "maxCacheGB": 8.0, "networkTimeout": 30.0,
         ])
@@ -65,6 +68,7 @@ final class Settings: ObservableObject {
         resumePlayback = d.bool(forKey: "resumePlayback")
         volume = d.double(forKey: "volume")
         controlsHideDelay = d.double(forKey: "controlsHideDelay")
+        autoCrop = d.bool(forKey: "autoCrop")
         brightness = d.double(forKey: "brightness")
         gamma = d.double(forKey: "gamma")
         contrast = d.double(forKey: "contrast")

@@ -56,6 +56,7 @@ final class InspectorController: NSWindowController, NSWindowDelegate {
             ("State", engine.isPlaying ? "playing" : "paused"),
         ]
         rows += engine.statusRows()
+        if let p = player { rows.append(("Black-bar crop", p.cropDescription)) }
         rows += [("App memory", String(format: "%.0f MB", InfoFormat.processFootprintMB())),
                  ("App CPU", String(format: "%.1f%%", cpuPct)),
                  ("Note", "Hardware-decoded frames live in VTDecoderXPCService (separate process)")]

@@ -58,6 +58,8 @@ protocol PlayerEngine: AnyObject {
     var mediaInfo: MediaInfo { get }
     /// Live, engine-specific status rows (buffering, A/V lead, dropped frames…).
     func statusRows() -> [MediaInfo.Row]
+    /// The decoded frame currently on screen (for black-bar detection); nil if unavailable.
+    func snapshotFrame(_ completion: @escaping (CVPixelBuffer?) -> Void)
 }
 
 extension PlayerEngine {
@@ -70,6 +72,7 @@ extension PlayerEngine {
     func appendWarning(_ message: String) {}
     var mediaInfo: MediaInfo { MediaInfo() }
     func statusRows() -> [MediaInfo.Row] { [] }
+    func snapshotFrame(_ completion: @escaping (CVPixelBuffer?) -> Void) { completion(nil) }
 }
 
 
