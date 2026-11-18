@@ -1,35 +1,62 @@
 import AppKit
+import CoreGraphics
 import CoreMedia
 import QuartzCore
 
 /// Display-synchronised presentation for engine C (what mpv calls display-resample, what TVs call 24p mode).
 ///
 /// Problem: 23.976 fps on a 60 Hz panel is 2.5025 refreshes per frame, so each frame's position relative to
-/// vsync drifts ~1 ms/s. Every few seconds a frame lands right on a refresh boundary and clock noise flips it
+/// vsync drifts ~1 ms/s. Every ~8 s a frame lands right on a refresh boundary and clock noise flips it
 /// between two refreshes: bursts of 3-3-2-2 instead of 2-3-2-3 (judder). IINA/mpv have the same by default.
 ///
 /// Fix, only when the display rate is within 0.2% of a half-integer multiple of the frame rate:
-///  1. rate-lock: play at refresh/(n·fps) (e.g. ×1.001, 23.976 → 24.000) so the phase stops drifting; audio is
+///  1. Speed: the audio clock runs at s = refresh/(n·fps) (e.g. ×1.001, 23.976 → 24.000 fps); audio is
 ///     resampled (varispeed, +1.7 cents — inaudible).
-///  2. phase-lock: offset video timestamps by a few ms so frames sit a quarter-refresh away from any boundary
-///     (safe whichever way the renderer rounds), re-checked every 2 s with hysteresis.
+///  2. The video layer does NOT follow that clock directly: measured on screen, AVSampleBufferDisplayLayer
+///     paces frames 2-2-2-4 whenever its timebase rate isn't exactly 1. So video gets its own timebase at
+///     exactly 1× host time, with timestamps scaled by 1/s, slaved to the audio clock: V = C/s + d.
+///  3. Phase: d (a few ms of A/V offset) is chosen so frames sit a quarter-refresh away from any boundary,
+///     re-checked every 2 s; it's only nudged when the phase or the audio-vs-host clock drift (tens of ppm)
+///     gets close to the limits. Nudges of a few ms are invisible; a half-refresh wrap (one cadence step) is
+///     needed only every few minutes at most.
 final class DisplaySync: NSObject {
+    /// Clock ratio to use, or nil when the refresh rate isn't a clean multiple of the frame rate.
+    static func scale(fps: Double, refreshHz: Double) -> Double? {
+        guard fps > 0, refreshHz > 0 else { return nil }
+        let ratio = refreshHz / fps
+        let multiple = (ratio * 2).rounded() / 2          // 1, 1.5, 2, 2.5, 3, …
+        let r = ratio / multiple
+        guard multiple >= 1, abs(r - 1) < 0.0021 else { return nil }
+        return r
+    }
+
+    /// Nominal refresh rate of the main display (60 on a MacBook Air panel).
+    static var mainDisplayRefreshHz: Double {
+        guard let mode = CGDisplayCopyDisplayMode(CGMainDisplayID()) else { return 60 }
+        return mode.refreshRate > 0 ? mode.refreshRate : 60
+    }
+
     private weak var view: NSView?
     private var link: CADisplayLink?
     private var timer: Timer?
     private var periods: [Double] = []
+    private var callbacks = 0
     private let fps: Double
     private let base: Double
-    private let apply: (_ rate: Float, _ videoOffset: Double) -> Void
-    private let mediaTimeAtHost: (_ hostSeconds: Double) -> Double?
-    private(set) var rate: Float = 1
+    let scale: Double
+    /// (audio/content clock, video clock) at a host time; nil while paused.
+    private let measure: (_ hostSeconds: Double) -> (content: Double, video: Double)?
+    /// Re-anchor the video clock so that V = C/s + offset from now on.
+    private let setOffset: (_ offset: Double) -> Void
     private(set) var offset: Double = 0
     private(set) var refreshHz: Double = 0
+    private var needsPhase = true
+    private var lastErr: Double = 0
 
-    init(view: NSView, fps: Double, base: Double,
-         mediaTimeAtHost: @escaping (Double) -> Double?, apply: @escaping (Float, Double) -> Void) {
-        self.view = view; self.fps = fps; self.base = base
-        self.mediaTimeAtHost = mediaTimeAtHost; self.apply = apply
+    init(view: NSView, fps: Double, base: Double, scale: Double,
+         measure: @escaping (Double) -> (content: Double, video: Double)?, setOffset: @escaping (Double) -> Void) {
+        self.view = view; self.fps = fps; self.base = base; self.scale = scale
+        self.measure = measure; self.setOffset = setOffset
     }
 
     func start() {
@@ -45,10 +72,13 @@ final class DisplaySync: NSObject {
         link?.invalidate(); link = nil
     }
 
+    /// The video clock was re-anchored (play, seek): re-place the phase at the next check.
+    func resync() { needsPhase = true }
+
     var summary: String {
         guard refreshHz > 0 else { return "measuring…" }
-        if rate == 1 { return String(format: "off (%.3f fps on %.2f Hz isn't a clean multiple)", fps, refreshHz) }
-        return String(format: "%.3f → %.3f fps on %.2f Hz (×%.4f), phase offset %+.1f ms", fps, fps * Double(rate), refreshHz, rate, offset * 1000)
+        return String(format: "%.3f → %.3f fps on %.2f Hz (×%.4f) · A/V offset %+.1f ms · phase margin %.1f ms",
+                      fps, fps * scale, refreshHz, scale, offset * 1000, 250 / refreshHz - abs(lastErr) * 1000)
     }
 
     @objc private func vsync(_ l: CADisplayLink) {
@@ -57,59 +87,45 @@ final class DisplaySync: NSObject {
         periods.append(p)
         if periods.count > 16 { periods.removeFirst() }
         // A few callbacks per check are enough; then sleep until the next timer tick.
-        if periods.count % 3 != 0 { return }
+        callbacks += 1
+        if callbacks % 3 != 0 { return }
         l.isPaused = true
         let period = periods.reduce(0, +) / Double(periods.count)
         refreshHz = 1 / period
         update(vsyncHost: l.timestamp, period: period)
     }
 
-    // Phase-locked loop state: the playback clock follows the audio device clock, which differs from the
-    // display clock by up to a few hundred ppm, so a computed rate alone still drifts. Measure the phase drift
-    // between checks and trim the rate to cancel it.
-    private var lastPhase: (host: Double, x: Double, offset: Double)?
-    private var trim: Double = 1
-
     private func update(vsyncHost: Double, period: Double) {
-        let ratio = (1 / period) / fps
-        let multiple = (ratio * 2).rounded() / 2          // 2, 2.5, 3, …
-        let r = ratio / multiple
-        guard multiple >= 1, abs(r - 1) < 0.0021, let mv = mediaTimeAtHost(vsyncHost) else {
-            lastPhase = nil; trim = 1
-            if rate != 1 || offset != 0 { rate = 1; offset = 0; apply(1, 0) }
-            return
-        }
-        let p = period * r                                // media time per refresh
-        let half = p / 2
-        let fd = 1 / fps
-        let k = ((mv - base - offset) / fd).rounded(.up)
-        let t = base + k * fd + offset                    // next frame's presentation time
-        var x = (t - mv).truncatingRemainder(dividingBy: half)
-        if x < 0 { x += half }
+        guard let m = measure(vsyncHost) else { needsPhase = true; return }   // paused
+        let s = scale
+        let half = period / 2
+        // Is this display still a clean multiple (the window may have moved to another screen)?
+        let multiple = ((1 / period) / (fps * s) * 2).rounded() / 2
+        let lockable = multiple >= 1 && abs((1 / period) / (fps * s) / multiple - 1) < 0.0005
 
-        // Drift since last check (unwrapped within ±¼ refresh, excluding our own offset changes).
-        if let last = lastPhase, vsyncHost - last.host > 0.5 {
-            var dx = (x - last.x) - (offset - last.offset)
-            while dx > half / 2 { dx -= half }
-            while dx < -half / 2 { dx += half }
-            let drift = dx / (vsyncHost - last.host)      // media seconds per second
-            trim = min(max(trim * (1 + drift * 0.8), 0.997), 1.003)
+        var perr = 0.0
+        if lockable {
+            // Frame grid in video time: (base + k/fps)/s. Phase of the next frame relative to this vsync.
+            let fdv = 1 / (fps * s), b = base / s
+            let k = ((m.video - b) / fdv).rounded(.up)
+            var x = (b + k * fdv - m.video).truncatingRemainder(dividingBy: half)
+            if x < 0 { x += half }
+            perr = x - half / 2                            // 0 = frames ¼ refresh from any boundary
         }
-        let newRate = Float(r * trim)
+        let e = m.video - m.content / s                    // A/V offset actually in effect
+        lastErr = perr
+        let debug = ProcessInfo.processInfo.environment["LP_SYNC_DEBUG"] != nil
+        if debug { NSLog("displaysync: phase err %+.2f ms, A/V %+.2f ms", perr * 1000, e * 1000) }
 
-        let err = x - half / 2                            // want frames ¼ refresh away from any boundary
-        var newOffset = offset
-        if abs(err) > p / 8 || lastPhase == nil { newOffset = offset - err }
-        while newOffset > half { newOffset -= p }
-        while newOffset < -half { newOffset += p }
-        lastPhase = (vsyncHost, x + (newOffset - offset), newOffset)
-
-        if abs(newRate - rate) > 0.000_002 || abs(newOffset - offset) > 0.0001 {
-            if ProcessInfo.processInfo.environment["LP_SYNC_DEBUG"] != nil {
-                NSLog("displaysync: rate %.6f (trim %+.0f ppm) offset %.2f ms err %.2f ms (refresh %.3f Hz)", newRate, (trim - 1) * 1e6, newOffset * 1000, err * 1000, refreshHz)
-            }
-            rate = newRate; offset = newOffset
-            apply(rate, offset)
-        }
+        guard needsPhase || abs(perr) > half / 2 - 0.0015 || abs(e) > half + 0.001 else { return }
+        // Moving the video clock forward by Δ moves the phase by −Δ.
+        var d = e + perr
+        while d > half { d -= half }                       // half-refresh steps keep the phase
+        while d < -half { d += half }
+        needsPhase = false
+        offset = d
+        lastErr = 0
+        if debug { NSLog("displaysync: A/V offset → %+.2f ms", d * 1000) }
+        setOffset(d)
     }
 }

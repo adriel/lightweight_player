@@ -36,6 +36,9 @@ SRT
    -metadata:s:s:0 language=eng -metadata:s:s:0 title=English -metadata:s:s:1 language=eng -metadata:s:s:1 title="English (Forced)" -disposition:s:0 0 -disposition:s:1 forced h264_1080p_subs.mkv
 [[ -f h264_1080p_subs.mp4 ]] || $FF -i h264_1080p.mp4 -i subs_en.srt -i subs_forced.srt -map 0:v -map 0:a -map 1 -map 2 -c:v copy -c:a copy -c:s mov_text \
    -metadata:s:s:0 language=eng -metadata:s:s:1 language=eng -disposition:s:0 0 -disposition:s:1 forced h264_1080p_subs.mp4
+# Cadence test clips (every frame differs → on-screen hold pattern must be a strict 2,3,2,3; see cadence.swift)
+[[ -f cadence_23976.mkv ]] || $FF -f lavfi -i "testsrc2=size=1920x1080:rate=24000/1001" -f lavfi -i "sine=frequency=440:sample_rate=48000" -t 90 -c:v hevc_videotoolbox -b:v 8M -tag:v hvc1 -c:a aac -b:a 128k -shortest cadence_23976.mkv
+[[ -f cadence_24.mkv ]] || $FF -f lavfi -i "testsrc2=size=1920x1080:rate=24" -f lavfi -i "sine=frequency=440:sample_rate=48000" -t 60 -c:v hevc_videotoolbox -b:v 8M -tag:v hvc1 -c:a aac -b:a 128k -shortest cadence_24.mkv
 # Codec coverage clips (synthetic, 20s)
 SRC=(-f lavfi -i testsrc2=size=1920x1080:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 20)
 [[ -f vp9_1080p.webm ]] || $FF $SRC -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 4M -c:a libopus vp9_1080p.webm

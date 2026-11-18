@@ -1,5 +1,6 @@
 // Measures on-screen frame cadence of an app's window with ScreenCaptureKit.
-// usage: swift Bench/cadence.swift <pid> <seconds>
+// usage: swiftc -O -o /tmp/cadence Bench/cadence.swift && /tmp/cadence <pid> <seconds>
+// (compile it: the interpreted script is too slow and drops captures, which reads as false cadence breaks)
 // Prints how many display refreshes each new video frame stayed on screen. 23.976 fps on 60 Hz should be a
 // strict 2,3,2,3 pattern; 1s / 4s / runs of 2,2 or 3,3 are judder.
 import Foundation
@@ -73,4 +74,4 @@ for i in 1..<max(holds.count, 1) where holds.count > 1 && [2, 3].contains(holds[
     if holds[i] == holds[i - 1] { pulldownBreaks += 1 }
 }
 print("3:2 cadence breaks: \(pulldownBreaks) of \(pulldownPairs) pairs")
-print("sequence:", useful.prefix(60).map(String.init).joined(separator: ""))
+print("sequence:", holds.map(String.init).joined(separator: ""))
