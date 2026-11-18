@@ -230,6 +230,47 @@ final class SampleBufferEngine: PlayerEngine {
         }
     }
 
+    /// Sample-accurate audio clock. Container timestamps are rounded (Matroska: 1 ms), so consecutive
+    /// audio buffers would otherwise start up to ±1.7 ms off where the previous one ended, and the renderer
+    /// honours that literally (tiny gaps/overlaps = crackle/stutter). We chain buffers back-to-back and only
+    /// resync to the container clock on a real discontinuity (seek, gap > 100 ms).
+    private var audioNext: CMTime?
+
+    private func continuousAudio(_ sb: CMSampleBuffer) -> CMSampleBuffer {
+        guard let asbd = sb.formatDescription.flatMap({ CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }),
+              asbd.mSampleRate > 0 else { return sb }
+        let rate = CMTimeScale(asbd.mSampleRate.rounded())
+        let isPCM = asbd.mFormatID == kAudioFormatLinearPCM
+        let perPacket = Int64(isPCM ? 1 : asbd.mFramesPerPacket)
+        guard perPacket > 0 else { audioNext = nil; return sb }   // variable-size packets: keep container timing
+        let frames = Int64(CMSampleBufferGetNumSamples(sb)) * perPacket
+        let pts = sb.presentationTimeStamp.convertScale(rate, method: .roundHalfAwayFromZero)
+        var start = pts
+        if let next = audioNext, abs((pts - next).seconds) < 0.1 { start = next }
+        audioNext = start + CMTime(value: frames, timescale: rate)
+        guard start != sb.presentationTimeStamp else { return sb }
+        var timing = CMSampleTimingInfo(duration: CMTime(value: perPacket, timescale: rate), presentationTimeStamp: start, decodeTimeStamp: .invalid)
+        var out: CMSampleBuffer?
+        CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: sb, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &out)
+        return out ?? sb
+    }
+
+    static let audioDebug = ProcessInfo.processInfo.environment["LP_AUDIO_DEBUG"] != nil
+    private var dbgExpected: Double?
+    private var dbgGaps: [Double] = []
+    private func debugAudio(_ sb: CMSampleBuffer) {
+        guard let asbd = sb.formatDescription.flatMap({ CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }) else { return }
+        let n = Double(CMSampleBufferGetNumSamples(sb)) * Double(max(asbd.mFramesPerPacket, 1))
+        let pts = sb.presentationTimeStamp.seconds
+        if let e = dbgExpected { dbgGaps.append((pts - e) * 1000) }
+        dbgExpected = pts + n / asbd.mSampleRate
+        if dbgGaps.count == 400 {
+            let nonzero = dbgGaps.filter { abs($0) > 0.01 }
+            print(String(format: "AUDIODBG fmt=%@ n=%.0f gaps>0.01ms: %d/400, min %.3f max %.3f ms", asbd.mFormatID.fourCCString, n, nonzero.count, dbgGaps.min()!, dbgGaps.max()!))
+            fflush(stdout); dbgGaps.removeAll()
+        }
+    }
+
     private func resumeAudioIfThrottled(_ gen: Int) {
         guard audioThrottled, eof || lastAudioPTS < lastVideoPTS + Self.audioLeadOverVideo else { return }
         audioThrottled = false
@@ -253,8 +294,10 @@ final class SampleBufferEngine: PlayerEngine {
                 if pts + sb.duration.seconds.finiteOrZero < t { continue }
                 audioCutoff = nil
             }
-            lastAudioPTS = pts
-            audioRenderer.enqueue(sb)
+            let timed = continuousAudio(sb)
+            lastAudioPTS = timed.presentationTimeStamp.seconds
+            if Self.audioDebug { debugAudio(timed) }
+            audioRenderer.enqueue(timed)
         }
     }
 
@@ -305,6 +348,7 @@ final class SampleBufferEngine: PlayerEngine {
     private func freePending() {
         videoPending.removeAll(); audioPending.removeAll()
         decodedVideo.removeAll(); decodedAudio.removeAll()
+        audioNext = nil
         videoDrained = false; audioDrained = false
         lastVideoPTS = 0; lastAudioPTS = 0
     }
