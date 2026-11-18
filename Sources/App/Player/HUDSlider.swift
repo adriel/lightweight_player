@@ -26,7 +26,7 @@ final class HUDSlider: NSView {
         addTrackingArea(t); tracking = t
     }
 
-    private var trackInset: CGFloat { knobStyle == .pill ? 10 : 4 }
+    private var trackInset: CGFloat { knobStyle == .pill ? 8 : 2 }
     private func fraction(at p: NSPoint) -> Double {
         let w = bounds.width - trackInset * 2
         return Double(min(max((p.x - trackInset) / max(w, 1), 0), 1))
@@ -35,11 +35,11 @@ final class HUDSlider: NSView {
     override func draw(_ dirty: NSRect) {
         let v = isDragging ? dragValue : value
         let midY = bounds.midY
-        let trackH: CGFloat = 4
+        let trackH: CGFloat = knobStyle == .bar ? 2.5 : 3
         let x0 = trackInset, w = bounds.width - trackInset * 2
         let track = NSRect(x: x0, y: midY - trackH / 2, width: w, height: trackH)
         NSColor.white.withAlphaComponent(0.25).setFill()
-        NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2).fill()
+        NSBezierPath(roundedRect: track, xRadius: trackH / 2, yRadius: trackH / 2).fill()
         NSColor.white.withAlphaComponent(0.25).setFill()
         for b in buffered {
             let r = NSRect(x: x0 + w * b.lowerBound, y: track.minY, width: max(1, w * (b.upperBound - b.lowerBound)), height: trackH)
@@ -51,9 +51,9 @@ final class HUDSlider: NSView {
         NSColor.white.setFill()
         switch knobStyle {
         case .pill:
-            NSBezierPath(roundedRect: NSRect(x: kx - 10, y: midY - 7, width: 20, height: 14), xRadius: 7, yRadius: 7).fill()
+            NSBezierPath(roundedRect: NSRect(x: kx - 8, y: midY - 5.5, width: 16, height: 11), xRadius: 5.5, yRadius: 5.5).fill()
         case .bar:
-            NSBezierPath(roundedRect: NSRect(x: kx - 2, y: midY - 9, width: 4, height: 18), xRadius: 2, yRadius: 2).fill()
+            NSBezierPath(roundedRect: NSRect(x: kx - 1, y: midY - 6.5, width: 2, height: 13), xRadius: 1, yRadius: 1).fill()
         }
     }
 

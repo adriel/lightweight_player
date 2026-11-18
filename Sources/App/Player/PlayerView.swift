@@ -81,11 +81,11 @@ final class PlayerView: NSView {
             toast.bottomAnchor.constraint(equalTo: toastBox.bottomAnchor, constant: -6),
 
             controlBar.centerXAnchor.constraint(equalTo: centerXAnchor),
-            controlBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -18),
+            controlBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -24),
             controlBar.heightAnchor.constraint(equalToConstant: ControlBar.preferredHeight),
-            controlBar.widthAnchor.constraint(lessThanOrEqualToConstant: 920),
-            controlBar.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -36),
-            controlBar.widthAnchor.constraint(equalTo: widthAnchor, constant: -36).withPriority(NSLayoutConstraint.Priority(490)), // below windowSizeStayPut so the bar never resizes the window
+            controlBar.widthAnchor.constraint(lessThanOrEqualToConstant: ControlBar.preferredWidth),
+            controlBar.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -24),
+            controlBar.widthAnchor.constraint(equalToConstant: ControlBar.preferredWidth).withPriority(NSLayoutConstraint.Priority(490)), // below windowSizeStayPut so the bar never resizes the window
         ])
     }
     required init?(coder: NSCoder) { fatalError() }

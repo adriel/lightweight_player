@@ -34,25 +34,25 @@ final class ControlBar: NSView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        glass.cornerRadius = 18
+        glass.cornerRadius = 12
         glass.style = .clear
         glass.tintColor = NSColor.black.withAlphaComponent(0.35)
         glass.contentView = content
         glass.translatesAutoresizingMaskIntoConstraints = false
         addSubview(glass)
 
-        let rew = HUDButton(symbol: "backward.fill", size: 22, target: self, action: #selector(rewind))
-        playButton = HUDButton(symbol: "play.fill", size: 30, target: self, action: #selector(togglePlay))
-        let fwd = HUDButton(symbol: "forward.fill", size: 22, target: self, action: #selector(forward))
-        volumeButton = HUDButton(symbol: "speaker.wave.2.fill", size: 16, target: self, action: #selector(toggleMute))
-        subButton = HUDButton(symbol: "captions.bubble", size: 17, target: self, action: #selector(subs(_:)))
-        adjustButton = HUDButton(symbol: "slider.horizontal.3", size: 16, target: self, action: #selector(adjust(_:)))
-        pipButton = HUDButton(symbol: "pip.enter", size: 17, target: self, action: #selector(pip))
-        let gear = HUDButton(symbol: "gearshape.fill", size: 17, target: self, action: #selector(settings))
+        let rew = HUDButton(symbol: "backward.fill", size: 15, target: self, action: #selector(rewind))
+        playButton = HUDButton(symbol: "play.fill", size: 21, target: self, action: #selector(togglePlay))
+        let fwd = HUDButton(symbol: "forward.fill", size: 15, target: self, action: #selector(forward))
+        volumeButton = HUDButton(symbol: "speaker.wave.2.fill", size: 12, target: self, action: #selector(toggleMute))
+        subButton = HUDButton(symbol: "captions.bubble", size: 13, target: self, action: #selector(subs(_:)))
+        adjustButton = HUDButton(symbol: "slider.horizontal.3", size: 12, target: self, action: #selector(adjust(_:)))
+        pipButton = HUDButton(symbol: "pip.enter", size: 13, target: self, action: #selector(pip))
+        let gear = HUDButton(symbol: "gearshape.fill", size: 13, target: self, action: #selector(settings))
         subButton.toolTip = "Subtitles"; adjustButton.toolTip = "Brightness & gamma"; pipButton.toolTip = "Picture in Picture"; gear.toolTip = "Settings"
 
         for l in [elapsed, total] {
-            l.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+            l.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
             l.textColor = NSColor.white.withAlphaComponent(0.85)
         }
         total.alignment = .right
@@ -65,7 +65,7 @@ final class ControlBar: NSView {
         volume.knobStyle = .pill
         volume.onChange = { [weak self] v, _ in self?.delegate?.controlBarVolume(v); self?.updateVolumeIcon(v) }
 
-        hoverLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        hoverLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
         hoverLabel.textColor = .white
         hoverBox.wantsLayer = true
         hoverBox.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.6).cgColor
@@ -77,7 +77,7 @@ final class ControlBar: NSView {
         hoverLabel.translatesAutoresizingMaskIntoConstraints = false
         hoverBox.addSubview(hoverLabel)
 
-        let topY: CGFloat = 30, bottomY: CGFloat = 76
+        let topY: CGFloat = 26, bottomY: CGFloat = 57
         hoverX = hoverBox.centerXAnchor.constraint(equalTo: seek.leadingAnchor)
         NSLayoutConstraint.activate([
             glass.leadingAnchor.constraint(equalTo: leadingAnchor), glass.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -85,39 +85,39 @@ final class ControlBar: NSView {
 
             playButton.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             playButton.centerYAnchor.constraint(equalTo: content.topAnchor, constant: topY),
-            rew.trailingAnchor.constraint(equalTo: playButton.leadingAnchor, constant: -22),
+            rew.trailingAnchor.constraint(equalTo: playButton.leadingAnchor, constant: -26),
             rew.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-            fwd.leadingAnchor.constraint(equalTo: playButton.trailingAnchor, constant: 22),
+            fwd.leadingAnchor.constraint(equalTo: playButton.trailingAnchor, constant: 26),
             fwd.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
 
-            volumeButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 22),
+            volumeButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             volumeButton.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-            volumeButton.widthAnchor.constraint(equalToConstant: 26),
-            volume.leadingAnchor.constraint(equalTo: volumeButton.trailingAnchor, constant: 6),
+            volumeButton.widthAnchor.constraint(equalToConstant: 20),
+            volume.leadingAnchor.constraint(equalTo: volumeButton.trailingAnchor, constant: 4),
             volume.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-            volume.widthAnchor.constraint(equalToConstant: 130), volume.heightAnchor.constraint(equalToConstant: 24),
-            volume.trailingAnchor.constraint(lessThanOrEqualTo: rew.leadingAnchor, constant: -16),
+            volume.widthAnchor.constraint(equalToConstant: 76), volume.heightAnchor.constraint(equalToConstant: 18),
+            volume.trailingAnchor.constraint(lessThanOrEqualTo: rew.leadingAnchor, constant: -10),
 
-            gear.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -22),
+            gear.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             gear.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-            pipButton.trailingAnchor.constraint(equalTo: gear.leadingAnchor, constant: -18),
+            pipButton.trailingAnchor.constraint(equalTo: gear.leadingAnchor, constant: -10),
             pipButton.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-            adjustButton.trailingAnchor.constraint(equalTo: pipButton.leadingAnchor, constant: -18),
+            adjustButton.trailingAnchor.constraint(equalTo: pipButton.leadingAnchor, constant: -10),
             adjustButton.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-            subButton.trailingAnchor.constraint(equalTo: adjustButton.leadingAnchor, constant: -18),
+            subButton.trailingAnchor.constraint(equalTo: adjustButton.leadingAnchor, constant: -10),
             subButton.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-            subButton.leadingAnchor.constraint(greaterThanOrEqualTo: fwd.trailingAnchor, constant: 16),
+            subButton.leadingAnchor.constraint(greaterThanOrEqualTo: fwd.trailingAnchor, constant: 10),
 
-            elapsed.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 22),
+            elapsed.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             elapsed.centerYAnchor.constraint(equalTo: content.topAnchor, constant: bottomY),
-            elapsed.widthAnchor.constraint(greaterThanOrEqualToConstant: 58),
-            total.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -22),
+            elapsed.widthAnchor.constraint(greaterThanOrEqualToConstant: 40),
+            total.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             total.centerYAnchor.constraint(equalTo: elapsed.centerYAnchor),
-            total.widthAnchor.constraint(greaterThanOrEqualToConstant: 58),
-            seek.leadingAnchor.constraint(equalTo: elapsed.trailingAnchor, constant: 8),
-            seek.trailingAnchor.constraint(equalTo: total.leadingAnchor, constant: -8),
+            total.widthAnchor.constraint(greaterThanOrEqualToConstant: 40),
+            seek.leadingAnchor.constraint(equalTo: elapsed.trailingAnchor, constant: 6),
+            seek.trailingAnchor.constraint(equalTo: total.leadingAnchor, constant: -6),
             seek.centerYAnchor.constraint(equalTo: elapsed.centerYAnchor),
-            seek.heightAnchor.constraint(equalToConstant: 24),
+            seek.heightAnchor.constraint(equalToConstant: 18),
 
             hoverX, hoverBox.bottomAnchor.constraint(equalTo: seek.topAnchor, constant: -2),
             hoverLabel.leadingAnchor.constraint(equalTo: hoverBox.leadingAnchor, constant: 6),
@@ -128,7 +128,8 @@ final class ControlBar: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    static let preferredHeight: CGFloat = 104
+    static let preferredHeight: CGFloat = 78
+    static let preferredWidth: CGFloat = 460
 
     // MARK: Updates from the player
 
@@ -137,7 +138,7 @@ final class ControlBar: NSView {
         if seek.buffered != buffered { seek.buffered = buffered }
         elapsed.stringValue = formatTime(time)
         total.stringValue = showRemaining ? "-" + formatTime(max(0, duration - time)) : formatTime(duration)
-        playButton.setSymbol(playing ? "pause.fill" : "play.fill", size: 30)
+        playButton.setSymbol(playing ? "pause.fill" : "play.fill", size: 21)
     }
 
     func setVolume(_ v: Double, muted: Bool) {
@@ -145,18 +146,18 @@ final class ControlBar: NSView {
         updateVolumeIcon(muted ? 0 : v)
     }
 
-    func setSubtitlesActive(_ on: Bool) { subButton.setSymbol(on ? "captions.bubble.fill" : "captions.bubble", size: 17) }
+    func setSubtitlesActive(_ on: Bool) { subButton.setSymbol(on ? "captions.bubble.fill" : "captions.bubble", size: 13) }
     func setPiPAvailable(_ on: Bool) { pipButton.isEnabled = on; pipButton.alphaValue = on ? 1 : 0.4 }
 
     private func updateVolumeIcon(_ v: Double) {
         let name = v <= 0.001 ? "speaker.slash.fill" : v < 0.34 ? "speaker.wave.1.fill" : v < 0.67 ? "speaker.wave.2.fill" : "speaker.wave.3.fill"
-        volumeButton.setSymbol(name, size: 16)
+        volumeButton.setSymbol(name, size: 12)
     }
 
     private func hover(_ f: Double?) {
         guard let f, let d = delegate else { hoverBox.isHidden = true; return }
         hoverLabel.stringValue = d.controlBarTimeString(at: f)
-        hoverX.constant = 10 + (seek.bounds.width - 20) * f
+        hoverX.constant = 4 + (seek.bounds.width - 8) * f
         hoverBox.isHidden = false
     }
 
