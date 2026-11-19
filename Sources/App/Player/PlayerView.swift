@@ -17,6 +17,9 @@ final class PlayerView: NSView {
     private let placeholder = NSTextField(labelWithString: "Drop a video here\n⌘O open file  ·  ⇧⌘O open URL")
     private let osd = OSDView()
     private let bufferingHUD = BufferingHUD()
+    let sidebar = SidebarContainer()
+    private var sidebarTrailing: NSLayoutConstraint!
+    private(set) var isSidebarShown = false
     private var videoView: NSView?
     private var tracking: NSTrackingArea?
     private var toastTimer: Timer?
@@ -73,6 +76,17 @@ final class PlayerView: NSView {
                 self?.applySavedBarPosition(); self?.layoutSubtreeIfNeeded()
             }
         }
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.isHidden = true
+        addSubview(sidebar)                         // above the control bar, like IINA
+        sidebarTrailing = sidebar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: SidebarContainer.width)
+        NSLayoutConstraint.activate([
+            sidebarTrailing,
+            sidebar.topAnchor.constraint(equalTo: topAnchor), sidebar.bottomAnchor.constraint(equalTo: bottomAnchor),
+            sidebar.widthAnchor.constraint(equalToConstant: SidebarContainer.width).withPriority(NSLayoutConstraint.Priority(490)),
+            sidebar.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.8),
+        ])
+
         centerGuide.backgroundColor = NSColor.white.withAlphaComponent(0.55).cgColor
         centerGuide.isHidden = true
 
@@ -236,6 +250,26 @@ final class PlayerView: NSView {
         }
     }
 
+    // MARK: Sidebar
+
+    /// Slides the sidebar in from the right edge (or out).
+    func setSidebarShown(_ show: Bool, animated: Bool = true) {
+        guard show != isSidebarShown else { return }
+        isSidebarShown = show
+        if show { sidebar.isHidden = false; layoutSubtreeIfNeeded() }
+        let w = max(sidebar.frame.width, SidebarContainer.width)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = animated ? 0.22 : 0
+            ctx.timingFunction = CAMediaTimingFunction(name: show ? .easeOut : .easeIn)
+            ctx.allowsImplicitAnimation = true
+            sidebarTrailing.animator().constant = show ? 0 : w
+            layoutSubtreeIfNeeded()
+        }, completionHandler: { [weak self] in
+            guard let self, !self.isSidebarShown else { return }
+            self.sidebar.isHidden = true
+        })
+    }
+
     func flash(_ message: String) {
         osd.show(text: message)
         presentOSD()
@@ -276,6 +310,8 @@ final class PlayerView: NSView {
     /// Trackpad pinch resizes the player window.
     override func magnify(with e: NSEvent) { delegate?.playerViewMagnify(1 + e.magnification, ended: e.phase == .ended || e.phase == .cancelled) }
     override func mouseDown(with e: NSEvent) {
+        // A click on the video closes the sidebar (and does nothing else).
+        if isSidebarShown { setSidebarShown(false); return }
         if e.clickCount == 2 { delegate?.playerViewDoubleClicked() }
         else { window?.performDrag(with: e) }
     }

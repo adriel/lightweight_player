@@ -56,6 +56,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         window.addTitlebarAccessoryViewController(tags)
         tagsAccessory = tags
         titleTags.onRemoveCrop = { [weak self] in self?.removeCropForThisVideo() }
+        let sb = playerView.sidebar.model
+        sb.onPickAudio = { [weak self] id in self?.setAudioTrack(id) }
+        sb.onPickSubtitle = { [weak self] id in self?.selectSubtitle(id) }
+        sb.onLoadSubtitle = { [weak self] in self?.loadSubtitleFile() }
+        sb.onClose = { [weak self] in self?.playerView.setSidebarShown(false) }
         titleTags.onCropSettings = { (NSApp.delegate as? AppDelegate)?.showSettings(nil) }
         // Re-fit the title and the tag area whenever a tag changes (so nothing runs off the right edge).
         tagObserver = titleTags.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.fitTitle() } }
@@ -506,6 +511,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case 125: changeVolume(-settings.volumeStep / 100); return true                      // ↓
         case 49: togglePlay(); return true                                                    // space
         case 53:                                                                              // esc
+            if playerView.isSidebarShown { playerView.setSidebarShown(false); return true }
             if isFullScreen { toggleFullScreen(); return true }
             return false
         default: break
@@ -626,11 +632,30 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view)
     }
 
+    /// Sliders button: toggles the sidebar on its Video tab (switches to it if another tab is showing).
     func controlBarShowVideoAdjust(from view: NSView) {
-        let pop = NSPopover()
-        pop.behavior = .transient
-        pop.contentViewController = VideoAdjustViewController()
-        pop.show(relativeTo: view.bounds, of: view, preferredEdge: .maxY)
+        let sb = playerView.sidebar.model
+        if playerView.isSidebarShown && sb.tab == .video { playerView.setSidebarShown(false); return }
+        sb.tab = .video
+        showSidebar()
+    }
+
+    private func showSidebar() {
+        refreshSidebar()
+        playerView.setSidebarShown(true)
+    }
+
+    @objc func toggleSettingsSidebar(_ sender: Any?) {
+        if playerView.isSidebarShown { playerView.setSidebarShown(false) } else { showSidebar() }
+    }
+
+    /// Keeps the sidebar's track lists in step with the engine and the current selections.
+    private func refreshSidebar() {
+        let sb = playerView.sidebar.model
+        sb.audioTracks = (engine?.audioTracks ?? []).map { .init(id: $0.id, name: $0.displayName, detail: "") }
+        sb.selectedAudio = engine?.selectedAudioTrack
+        sb.subtitleTracks = subtitleTracks.map { .init(id: $0.id, name: $0.displayName, detail: $0.codec.uppercased(), enabled: $0.kind != .unsupported) }
+        sb.selectedSubtitle = selectedSubtitle
     }
 
     // MARK: Subtitles
@@ -662,6 +687,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func selectSubtitle(_ id: Int?) {
         selectedSubtitle = id
+        defer { refreshSidebar() }
         playerView.showSubtitle(nil)
         playerView.showBitmaps([], videoSize: .zero)
         playerView.controlBar.setSubtitlesActive(id != nil)
@@ -768,6 +794,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         guard let engine, let t = engine.audioTracks.first(where: { $0.id == id }) else { return }
         engine.selectAudioTrack(id)
         playerView.flash("Audio: " + t.displayName)
+        refreshSidebar()
     }
 
     // MARK: Frame step & chapters

@@ -199,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.addItem(item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
         view.addItem(.separator())
         view.addItem(item("Crop Black Bars   ( C )", #selector(PlayerWindowController.toggleAutoCrop(_:))))
+        view.addItem(item("Video, Audio & Subtitle Settings", #selector(PlayerWindowController.toggleSettingsSidebar(_:)), "s", [.command, .control]))
         view.addItem(.separator())
         view.addItem(item("Half Size", #selector(PlayerWindowController.halfSize(_:)), "0"))
         view.addItem(item("Normal Size", #selector(PlayerWindowController.normalSize(_:)), "1"))
@@ -233,53 +234,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main.addItem(withTitle: "Window", action: nil, keyEquivalent: "").submenu = window
         NSApp.windowsMenu = window
         return main
-    }
-}
-
-/// Popover with live brightness / contrast / gamma sliders (bound to Settings).
-final class VideoAdjustViewController: NSHostingController<VideoAdjustView> {
-    init() { super.init(rootView: VideoAdjustView(settings: Settings.shared)) }
-    @MainActor required dynamic init?(coder: NSCoder) { fatalError() }
-}
-
-struct VideoAdjustView: View {
-    @ObservedObject var settings: Settings
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Toggle(isOn: $settings.autoCrop) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Crop black bars")
-                    Text("Removes letterbox / pillarbox bars automatically (C)").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .toggleStyle(.switch)
-            Toggle(isOn: $settings.hdrEnabled) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("HDR")
-                    Text(settings.nowPlayingHDR == false ? "This video is SDR" :
-                         settings.hdrEnabled ? "HDR video uses the display's extra brightness" : "HDR video is tone-mapped to SDR")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .toggleStyle(.switch)
-            .disabled(settings.nowPlayingHDR == false)
-            Divider()
-            slider("Brightness", value: $settings.brightness, range: -0.5...0.5, format: { String(format: "%+.2f", $0) })
-            slider("Contrast", value: $settings.contrast, range: 0.5...1.5, format: { String(format: "%.2f", $0) })
-            slider("Gamma", value: $settings.gamma, range: 0.5...2.0, format: { String(format: "%.2f", $0) })
-            HStack {
-                Spacer()
-                Button("Reset") { settings.resetColor() }.disabled(!settings.hasColorAdjustments)
-            }
-        }
-        .padding(14)
-        .frame(width: 280)
-    }
-    private func slider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, format: @escaping (Double) -> String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack { Text(title); Spacer(); Text(format(value.wrappedValue)).monospacedDigit().foregroundStyle(.secondary) }
-            Slider(value: value, in: range)
-        }
     }
 }
 

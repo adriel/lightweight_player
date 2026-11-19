@@ -57,7 +57,7 @@ final class ControlBar: NSView {
         adjustButton = HUDButton(symbol: "slider.horizontal.3", size: 12, target: self, action: #selector(adjust(_:)))
         pipButton = HUDButton(symbol: "pip.enter", size: 13, target: self, action: #selector(pip))
         let gear = HUDButton(symbol: "gearshape", size: 14, target: self, action: #selector(settings))
-        subButton.toolTip = "Subtitles"; adjustButton.toolTip = "Brightness & gamma"; pipButton.toolTip = "Picture in Picture"; gear.toolTip = "Settings"
+        subButton.toolTip = "Subtitles"; adjustButton.toolTip = "Video, audio & subtitle settings"; pipButton.toolTip = "Picture in Picture"; gear.toolTip = "Settings"
 
         for l in [elapsed, total] {
             l.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
