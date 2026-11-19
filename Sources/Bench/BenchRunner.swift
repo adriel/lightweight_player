@@ -39,6 +39,7 @@ final class BenchRunner: NSObject, NSApplicationDelegate {
             case .failed(let m): self.failure = m; self.emit(["event": "failed", "message": m])
             case .ended: self.emit(["event": "ended"])
             case .needsFallback: self.emit(["event": "needsFallback"])
+            default: break
             }
         }
         start = Date()
