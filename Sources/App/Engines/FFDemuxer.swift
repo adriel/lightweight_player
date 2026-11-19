@@ -90,7 +90,7 @@ final class FFDemuxer {
         }
         if videoIndex >= 0 { buildVideoFormat() }
         if videoIndex >= 0, swVideo == nil, let fd = videoFormat, ProcessInfo.processInfo.environment["LP_LAYER_DECODE"] == nil {
-            hwVideo = HWVideoDecoder(format: fd)     // nil (→ the layer decodes) if VideoToolbox can't do it in hardware
+            hwVideo = HWVideoDecoder(format: fd, toneMapToSDR: !Settings.shared.hdrEnabled && FFDemuxer.isHDR(fd))     // nil (→ the layer decodes) if VideoToolbox can't do it in hardware
         }
         if audioIndex >= 0 { buildAudioFormat() }
         collectSubtitleStreams()
@@ -535,6 +535,20 @@ final class FFDemuxer {
     /// Exact constant frame-rate grid for the video stream (e.g. 24000/1001). Matroska stores timestamps rounded to
     /// 1 ms, so a 41.708 ms frame lands at 41 or 42 ms; on a 60 Hz display that flips frames between vsyncs and turns the
     /// steady 3:2 cadence into visible judder. Timestamps within 2 ms of the grid are snapped onto it.
+    /// Rebuilds the in-app decoder when the HDR setting changes for HDR content. Returns true if it changed
+    /// (the caller then re-seeks so decoding restarts at a keyframe).
+    func setToneMapToSDR(_ sdr: Bool) -> Bool {
+        guard let hw = hwVideo, let fd = videoFormat, FFDemuxer.isHDR(fd), hw.toneMapToSDR != sdr,
+              let fresh = HWVideoDecoder(format: fd, toneMapToSDR: sdr) else { return false }
+        hwVideo = fresh
+        return true
+    }
+
+    static func isHDR(_ fd: CMFormatDescription) -> Bool {
+        let tf = CMFormatDescriptionGetExtension(fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
+        return tf == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String) || tf == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)
+    }
+
     struct FrameGrid {
         let num: Int64, den: Int64      // frames per second = num / den
         let base: Double                // stream start, seconds

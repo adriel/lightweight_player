@@ -24,17 +24,28 @@ final class HWVideoDecoder {
     private var formats: [OSType: CMVideoFormatDescription] = [:]
     private(set) var failures = 0
 
-    init?(format: CMVideoFormatDescription) {
+    /// HDR off: VideoToolbox tone-maps to 8-bit BT.709 SDR while decoding.
+    let toneMapToSDR: Bool
+
+    init?(format: CMVideoFormatDescription, toneMapToSDR: Bool = false) {
+        self.toneMapToSDR = toneMapToSDR
         let codec = CMFormatDescriptionGetMediaSubType(format)
         if codec == kCMVideoCodecType_VP9 || codec == kCMVideoCodecType_AV1 { VTRegisterSupplementalVideoDecoderIfAvailable(codec) }
         // Native output format (often lossless-compressed '&xv0' surfaces): no conversion, least memory.
-        let attrs: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary]
+        var attrs: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary]
+        if toneMapToSDR { attrs[kCVPixelBufferPixelFormatTypeKey] = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange }
         let spec: [CFString: Any] = [kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder: true]
         var s: VTDecompressionSession?
         guard VTDecompressionSessionCreate(allocator: nil, formatDescription: format, decoderSpecification: spec as CFDictionary,
                                            imageBufferAttributes: attrs as CFDictionary, outputCallback: nil,
                                            decompressionSessionOut: &s) == noErr, let s else { return nil }
         VTSessionSetProperty(s, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+        if toneMapToSDR {
+            let pt: [CFString: Any] = [kVTPixelTransferPropertyKey_DestinationColorPrimaries: kCVImageBufferColorPrimaries_ITU_R_709_2,
+                                       kVTPixelTransferPropertyKey_DestinationTransferFunction: kCVImageBufferTransferFunction_ITU_R_709_2,
+                                       kVTPixelTransferPropertyKey_DestinationYCbCrMatrix: kCVImageBufferYCbCrMatrix_ITU_R_709_2]
+            VTSessionSetProperty(s, key: kVTDecompressionPropertyKey_PixelTransferProperties, value: pt as CFDictionary)
+        }
         session = s
     }
 
@@ -103,8 +114,14 @@ final class HWVideoDecoder {
         }
     }
 
+    private var loggedFormat = false
     private func wrap(_ image: CVImageBuffer, pts: CMTime, duration: CMTime) -> CMSampleBuffer? {
         let pf = CVPixelBufferGetPixelFormatType(image)
+        if !loggedFormat, ProcessInfo.processInfo.environment["LP_VIDEO_METRICS"] != nil {
+            loggedFormat = true
+            NSLog("decoder output: %@ transfer %@ (tone-map to SDR: %@)", pf.fourCCString,
+                  (CVBufferCopyAttachment(image, kCVImageBufferTransferFunctionKey, nil) as? String) ?? "-", toneMapToSDR ? "yes" : "no")
+        }
         var fd = formats[pf]
         if fd == nil || !CMVideoFormatDescriptionMatchesImageBuffer(fd!, imageBuffer: image) {
             var f: CMVideoFormatDescription?

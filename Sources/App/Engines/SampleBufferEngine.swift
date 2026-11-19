@@ -71,7 +71,9 @@ final class SampleBufferEngine: PlayerEngine {
             let str = String(format: "%d frames · %d dropped · %d corrupted · avg delay %.1f ms · optimized %d",
                              m.totalNumberOfFrames, m.numberOfDroppedFrames, m.numberOfCorruptedFrames, avgDelay, m.numberOfFramesDisplayedUsingOptimizedCompositing)
             DispatchQueue.main.async { self?.lastMetrics = str }
-            if log { DispatchQueue.main.async { guard let self else { return }; NSLog("metrics: %@ · lead %.2f s", str, self.lastVideoPTS - self.currentTime) } }
+            if log { DispatchQueue.main.async { guard let self else { return }; let pb = self.videoRenderer.displayedPixelBuffer()
+                let tf = pb.flatMap { CVBufferCopyAttachment($0, kCVImageBufferTransferFunctionKey, nil) as? String } ?? "-"
+                NSLog("metrics: %@ · lead %.2f s · frame %@ %@", str, self.lastVideoPTS - self.currentTime, pb.map { CVPixelBufferGetPixelFormatType($0).fourCCString } ?? "-", tf) } }
         }
     }
     private var metricsTimer: Timer?
@@ -262,6 +264,15 @@ final class SampleBufferEngine: PlayerEngine {
             b.addEntries(from: a as! [AnyHashable: Any])
         }
         return out
+    }
+
+    /// Recreates the decoder with/without SDR tone mapping and re-shows the current frame.
+    func setHDR(_ on: Bool) {
+        let t = currentTime
+        queue.async { [self] in
+            guard let demuxer, demuxer.setToneMapToSDR(!on) else { return }
+            DispatchQueue.main.async { self.seek(to: t, accurate: true) }
+        }
     }
 
     func pause() {

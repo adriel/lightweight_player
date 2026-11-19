@@ -99,7 +99,7 @@ enum InfoFormat {
         let headroom = s.maximumPotentialExtendedDynamicRangeColorComponentValue
         return [("Display", s.localizedName),
                 ("Display colorspace", s.colorSpace?.localizedName ?? "—"),
-                ("EDR headroom", headroom > 1.01 ? String(format: "%.1f× (HDR capable)", headroom) : "1× (SDR)")]
+                ("EDR headroom", headroom > 1.01 ? String(format: "%.1f× (HDR capable) · in use now: %.1f×", headroom, s.maximumExtendedDynamicRangeColorComponentValue) : "1× (SDR)")]
     }
 
     static func processFootprintMB() -> Double {

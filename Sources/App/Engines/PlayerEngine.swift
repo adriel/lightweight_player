@@ -60,6 +60,8 @@ protocol PlayerEngine: AnyObject {
     func statusRows() -> [MediaInfo.Row]
     /// The decoded frame currently on screen (for black-bar detection); nil if unavailable.
     func snapshotFrame(_ completion: @escaping (CVPixelBuffer?) -> Void)
+    /// HDR on: extended dynamic range output. Off: HDR video is tone-mapped to SDR.
+    func setHDR(_ on: Bool)
 }
 
 extension PlayerEngine {
@@ -73,6 +75,7 @@ extension PlayerEngine {
     var mediaInfo: MediaInfo { MediaInfo() }
     func statusRows() -> [MediaInfo.Row] { [] }
     func snapshotFrame(_ completion: @escaping (CVPixelBuffer?) -> Void) { completion(nil) }
+    func setHDR(_ on: Bool) {}
 }
 
 

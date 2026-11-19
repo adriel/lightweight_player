@@ -34,6 +34,12 @@ final class Settings: ObservableObject {
     @Published var gamma: Double { didSet { d.set(gamma, forKey: "gamma") } }                  // 0.5 ... 2.0
     @Published var contrast: Double { didSet { d.set(contrast, forKey: "contrast") } }         // 0.5 ... 1.5
 
+    /// Show HDR video (HDR10/HLG/Dolby Vision base layer) with extended dynamic range. Off: tone-mapped to SDR.
+    @Published var hdrEnabled: Bool { didSet { d.set(hdrEnabled, forKey: "hdrEnabled") } }
+    /// Full screen fills the whole display including the strip beside the camera notch (custom full screen
+    /// instead of macOS's, which keeps that strip black). Only affects displays with a notch.
+    @Published var fullScreenCoversNotch: Bool { didSet { d.set(fullScreenCoversNotch, forKey: "fullScreenCoversNotch") } }
+
     /// Detect letterbox / pillarbox bars and crop them away.
     @Published var autoCrop: Bool { didSet { d.set(autoCrop, forKey: "autoCrop") } }
 
@@ -58,7 +64,7 @@ final class Settings: ObservableObject {
         d.register(defaults: [
             "seekStep": 5.0, "longSeekStep": 30.0, "volumeStep": 5.0, "accurateSeek": true, "resumePlayback": true,
             "volume": 1.0, "controlsHideDelay": 2.0,
-            "autoCrop": true, "brightness": 0.0, "gamma": 1.0, "contrast": 1.0,
+            "autoCrop": true, "hdrEnabled": true, "fullScreenCoversNotch": false, "brightness": 0.0, "gamma": 1.0, "contrast": 1.0,
             "subtitleMode": SubtitleMode.forcedOnly.rawValue, "subtitleFontSize": 1.0, "loadSidecarSubtitles": true, "dtsCoreOnly": false, "useMediaExtensions": false,
             "bufferMinutes": 10.0, "maxCacheGB": 8.0, "networkTimeout": 30.0,
         ])
@@ -70,6 +76,8 @@ final class Settings: ObservableObject {
         volume = d.double(forKey: "volume")
         controlsHideDelay = d.double(forKey: "controlsHideDelay")
         autoCrop = d.bool(forKey: "autoCrop")
+        hdrEnabled = d.bool(forKey: "hdrEnabled")
+        fullScreenCoversNotch = d.bool(forKey: "fullScreenCoversNotch")
         brightness = d.double(forKey: "brightness")
         gamma = d.double(forKey: "gamma")
         contrast = d.double(forKey: "contrast")

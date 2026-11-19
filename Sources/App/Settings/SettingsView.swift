@@ -62,6 +62,13 @@ private struct VideoTab: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
+                Toggle("HDR (extended dynamic range)", isOn: $s.hdrEnabled)
+                Toggle("Full screen covers the camera notch", isOn: $s.fullScreenCoversNotch)
+            } footer: {
+                Text("HDR off tone-maps HDR10 / HLG video to SDR. Notch: full screen uses the whole display, including the strip beside the camera (the notch hides a small part of the picture); the menu bar and Dock appear when you move the pointer to them.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
                 slider("Brightness", $s.brightness, -0.5...0.5, "%+.2f")
                 slider("Contrast", $s.contrast, 0.5...1.5, "%.2f")
                 slider("Gamma", $s.gamma, 0.5...2.0, "%.2f")

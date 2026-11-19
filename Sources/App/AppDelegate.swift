@@ -154,6 +154,15 @@ struct VideoAdjustView: View {
     @ObservedObject var settings: Settings
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $settings.hdrEnabled) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("HDR")
+                    Text(settings.hdrEnabled ? "HDR video uses the display's extra brightness" : "HDR video is tone-mapped to SDR")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            Divider()
             slider("Brightness", value: $settings.brightness, range: -0.5...0.5, format: { String(format: "%+.2f", $0) })
             slider("Contrast", value: $settings.contrast, range: 0.5...1.5, format: { String(format: "%.2f", $0) })
             slider("Gamma", value: $settings.gamma, range: 0.5...2.0, format: { String(format: "%.2f", $0) })

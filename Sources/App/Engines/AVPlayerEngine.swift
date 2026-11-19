@@ -257,6 +257,24 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
     }
 
+    /// HDR off: render through a video composition whose output is BT.709 SDR (AVFoundation tone-maps).
+    private var sdrComposition = false
+    func setHDR(_ on: Bool) {
+        guard let asset, let item = player.currentItem, sdrComposition == on else { return }
+        sdrComposition = !on
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let hdrTracks = (try? await asset.loadTracks(withMediaCharacteristic: .containsHDRVideo)) ?? []
+            if on || hdrTracks.isEmpty { item.videoComposition = nil; return }
+            guard let c = try? await AVMutableVideoComposition.videoComposition(withPropertiesOf: asset) else { return }
+            c.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+            c.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+            c.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+            if !self.sdrComposition { return }
+            item.videoComposition = c
+        }
+    }
+
     func diagnostics() -> [String: String] {
         var d: [String: String] = [:]
         if let ext = asset?.mediaExtensionProperties { d["mediaExtension"] = ext.extensionIdentifier }
@@ -289,6 +307,7 @@ final class LayerHostView: NSView {
         root.addSublayer(hosted)
     }
 
+    /// HDR on: the video layer may use extended dynamic range. Off: HDR content is tone-mapped to SDR.
     /// Video size + optional crop (normalized, origin top-left). With a crop, the hosted layer is enlarged and
     /// offset so only the cropped part is visible (the root layer clips).
     var videoSize: CGSize = .zero { didSet { if videoSize != oldValue { needsLayout = true } } }

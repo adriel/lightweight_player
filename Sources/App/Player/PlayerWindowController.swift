@@ -42,6 +42,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         super.init(window: window)
         window.delegate = self
         window.keyHandler = { [weak self] e in self?.handleKey(e) ?? false }
+        window.fullScreenHandler = { [weak self] in self?.toggleFullScreen() }
         playerView.delegate = self
         playerView.controlBar.delegate = self
         playerView.controlBar.setVolume(settings.volume, muted: false)
@@ -84,6 +85,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             sizeWindowToVideo()
             startCropDetection()
             setupSubtitles()
+            engine.setHDR(settings.hdrEnabled)
             if let t = pendingResume, t < engine.duration - 10 {
                 engine.seek(to: t, accurate: false)
                 playerView.flash("Resumed at \(formatTime(t))")
@@ -124,7 +126,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func sizeWindowToVideo() {
-        guard let window, let engine, !window.styleMask.contains(.fullScreen) else { return }
+        guard let window, let engine, !isFullScreen else { return }
         let size = displaySize(engine.naturalSize)
         guard size.width > 0, size.height > 0 else { return }
         // fullSizeContentView: the content view covers the whole frame, so frame size == video size.
@@ -240,7 +242,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Keep the window height and change its width to the (cropped) video aspect.
     private func adjustWindowAspect() {
-        guard let window, let engine, !window.styleMask.contains(.fullScreen) else { return }
+        guard let window, let engine, !isFullScreen else { return }
         let size = displaySize(engine.naturalSize)
         guard size.width > 0, size.height > 0 else { return }
         window.aspectRatio = size
@@ -327,7 +329,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         controlsVisible = false
         playerView.setControlsVisible(false, animated: true)
         setTitlebarVisible(false)
-        if window.styleMask.contains(.fullScreen) { NSCursor.setHiddenUntilMouseMoves(true) }
+        if isFullScreen { NSCursor.setHiddenUntilMouseMoves(true) }
     }
 
     private func setTitlebarVisible(_ v: Bool) {
@@ -348,12 +350,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case 125: changeVolume(-settings.volumeStep / 100); return true                      // ↓
         case 49: togglePlay(); return true                                                    // space
         case 53:                                                                              // esc
-            if window?.styleMask.contains(.fullScreen) == true { window?.toggleFullScreen(nil); return true }
+            if isFullScreen { toggleFullScreen(); return true }
             return false
         default: break
         }
         switch e.charactersIgnoringModifiers?.lowercased() {
-        case "f": window?.toggleFullScreen(nil); return true
+        case "f": toggleFullScreen(); return true
         case "m": controlBarToggleMute(); return true
         case "c":
             settings.autoCrop.toggle()
@@ -518,6 +520,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             s.$gamma.sink { [weak self] _ in DispatchQueue.main.async { self?.applyColorAdjustments() } },
             s.$contrast.sink { [weak self] _ in DispatchQueue.main.async { self?.applyColorAdjustments() } },
             s.$subtitleFontSize.sink { [weak self] v in self?.playerView.subtitleScale = v },
+            s.$hdrEnabled.dropFirst().sink { [weak self] v in
+                DispatchQueue.main.async { self?.engine?.setHDR(v); self?.playerView.flash(v ? "HDR on" : "HDR off (tone-mapped to SDR)") }
+            },
         ]
     }
 
@@ -554,7 +559,49 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     // MARK: Window
 
-    func playerViewDoubleClicked() { window?.toggleFullScreen(nil) }
+    func playerViewDoubleClicked() { toggleFullScreen() }
+
+    // MARK: Full screen
+    // macOS's full screen keeps the strip beside the camera notch black (the window sits below it). With
+    // "Full screen covers the camera notch" we instead make the window borderless and exactly screen-sized,
+    // with the menu bar and Dock auto-hidden (what IINA calls legacy full screen).
+
+    private var notchFullScreen: (frame: NSRect, style: NSWindow.StyleMask, aspect: NSSize)?
+    var isFullScreen: Bool { notchFullScreen != nil || window?.styleMask.contains(.fullScreen) == true }
+
+    func toggleFullScreen() {
+        guard let window = window as? PlayerWindow else { return }
+        if let saved = notchFullScreen { exitNotchFullScreen(saved); return }
+        if window.styleMask.contains(.fullScreen) { window.nativeToggleFullScreen(); return }
+        if settings.fullScreenCoversNotch, let screen = window.screen ?? NSScreen.main, screen.safeAreaInsets.top > 0 {
+            enterNotchFullScreen(screen)
+        } else {
+            window.nativeToggleFullScreen()
+        }
+    }
+
+    private func enterNotchFullScreen(_ screen: NSScreen) {
+        guard let window else { return }
+        notchFullScreen = (window.frame, window.styleMask, window.aspectRatio)
+        NSApp.presentationOptions = [.autoHideMenuBar, .autoHideDock]
+        window.styleMask = [.borderless, .fullSizeContentView]
+        window.resizeIncrements = NSSize(width: 1, height: 1)     // clears the aspect-ratio constraint
+        window.setFrame(screen.frame, display: true)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(playerView)
+        showControls()
+    }
+
+    private func exitNotchFullScreen(_ saved: (frame: NSRect, style: NSWindow.StyleMask, aspect: NSSize)) {
+        guard let window else { return }
+        notchFullScreen = nil
+        window.styleMask = saved.style
+        window.setFrame(saved.frame, display: true)
+        if saved.aspect.width > 0 { window.aspectRatio = saved.aspect }
+        NSApp.presentationOptions = []
+        window.makeFirstResponder(playerView)
+        showControls()
+    }
     func playerViewDropped(_ urls: [URL]) {
         if let sub = urls.first(where: { ["srt", "vtt", "ass", "ssa"].contains($0.pathExtension.lowercased()) }), engine != nil {
             let id = 20_000 + externalCues.count
@@ -566,6 +613,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func windowWillClose(_ notification: Notification) {
+        if notchFullScreen != nil { NSApp.presentationOptions = []; notchFullScreen = nil }
         saveResumePosition()
         closeEngine()
         hideTimer?.invalidate()
@@ -582,4 +630,11 @@ final class PlayerWindow: NSWindow {
         if keyHandler?(event) != true { super.keyDown(with: event) }
     }
     override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+    /// Set by the controller so the menu item / green button also honour the notch setting.
+    var fullScreenHandler: (() -> Void)?
+    override func toggleFullScreen(_ sender: Any?) {
+        if let fullScreenHandler { fullScreenHandler() } else { super.toggleFullScreen(sender) }
+    }
+    func nativeToggleFullScreen() { super.toggleFullScreen(nil) }
 }
