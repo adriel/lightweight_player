@@ -3,6 +3,7 @@ import SwiftUI
 
 /// Small tags on the right of the player's title bar: hardware/software decoding and the HDR format.
 final class TitleTagsModel: ObservableObject {
+    @Published var engine: (name: String, detail: String)?
     @Published var decoding: VideoDecodingInfo?
     @Published var hdr: String?
     @Published var hdrOutput = true          // false when HDR is turned off (tone-mapped to SDR)
@@ -12,6 +13,10 @@ struct TitleTagsView: View {
     @ObservedObject var model: TitleTagsModel
     var body: some View {
         HStack(spacing: 6) {
+            if let e = model.engine {
+                Tag(text: e.name, icon: "square.stack.3d.up", tint: Color(white: 0.72))
+                    .help("Playback engine: " + e.detail)
+            }
             if let d = model.decoding {
                 Tag(text: d.hardware ? "HW" : "SW", icon: d.hardware ? "cpu" : "gearshape.2",
                     tint: d.hardware ? Color(red: 0.25, green: 0.75, blue: 0.45) : Color.orange)

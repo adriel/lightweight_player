@@ -10,6 +10,16 @@ enum EngineKind: String, CaseIterable {
     case sampleBuffer = "C"    // libavformat demux -> AVSampleBufferDisplayLayer / AudioRenderer (VideoToolbox decode)
     case mpv = "D"             // libmpv (IINA's engine), hwdec=videotoolbox, OpenGL render API
 
+    /// Short name for the title bar tag.
+    var tagName: String {
+        switch self {
+        case .avplayer: "AVFoundation"
+        case .avplayerExt: "AVF + Extension"
+        case .sampleBuffer: "FFmpeg"
+        case .mpv: "mpv"
+        }
+    }
+
     var label: String {
         switch self {
         case .avplayer: "AVPlayer"

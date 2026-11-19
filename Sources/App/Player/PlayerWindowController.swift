@@ -71,7 +71,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         saveResumePosition()
         closeEngine()
         currentURL = url
-        titleTags.decoding = nil; titleTags.hdr = nil
+        titleTags.decoding = nil; titleTags.hdr = nil; titleTags.engine = nil
         PlaybackHistory.shared.didOpen(url, key: resumeKey(url), name: url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent)
         color = settings.colorAdjustment(for: resumeKey(url)) ?? (0, 1, 1)
         claimColorSliders()
@@ -608,11 +608,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func updateTitleTags() {
         titleTags.decoding = engine?.videoDecoding; titleTags.hdr = engine?.hdrFormat; titleTags.hdrOutput = settings.hdrEnabled
+        if let e = engine { titleTags.engine = (e.kind.tagName, e.mediaInfo.engine.isEmpty ? e.kind.label : e.mediaInfo.engine) }
         DispatchQueue.main.async { [weak self] in self?.fitTitle() }
         // AVFoundation fills these in asynchronously; refresh once more shortly after.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self, let e = self.engine else { return }
             self.titleTags.decoding = e.videoDecoding; self.titleTags.hdr = e.hdrFormat
+            if !e.mediaInfo.engine.isEmpty { self.titleTags.engine = (e.kind.tagName, e.mediaInfo.engine) }
+            self.fitTitle()
         }
     }
 
