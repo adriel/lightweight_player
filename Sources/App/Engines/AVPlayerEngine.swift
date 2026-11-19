@@ -100,7 +100,14 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
                     : tf == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String) ? "HLG"
                     : (self.isHDRVideo ? "HDR" : nil)
                 let hw = VTIsHardwareDecodeSupported(sub)
-                self.videoDecoding = VideoDecodingInfo(hardware: hw, detail: "\(sub.fourCCString) · " + (hw ? "hardware (VideoToolbox media engine)" : "software (AVFoundation)"))
+                let codecName: String = switch sub {
+                case kCMVideoCodecType_HEVC, 0x64766831, 0x64766865: "HEVC"
+                case kCMVideoCodecType_H264, 0x64766131, 0x64766176: "H.264"
+                case kCMVideoCodecType_AV1: "AV1"
+                case kCMVideoCodecType_VP9: "VP9"
+                default: sub.fourCCString.trimmingCharacters(in: .whitespaces).uppercased()
+                }
+                self.videoDecoding = VideoDecodingInfo(hardware: hw, codec: codecName, decoder: hw ? "VideoToolbox (AVPlayer)" : "AVFoundation software decoder")
             }
             await self.loadAudioOptionsAndChapters(asset: asset, item: item)
             await self.buildMediaInfo(asset: asset, url: url)

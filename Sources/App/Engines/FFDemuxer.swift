@@ -682,8 +682,8 @@ final class FFDemuxer {
     var videoDecoding: VideoDecodingInfo? {
         guard videoIndex >= 0 else { return nil }
         let codec = videoCodecName.uppercased()
-        if let sw = swVideo { return VideoDecodingInfo(hardware: false, detail: "\(codec) · software (\(sw.decoderName), \(sw.threads) threads)") }
-        return VideoDecodingInfo(hardware: true, detail: "\(codec) · hardware (VideoToolbox media engine)")
+        if let sw = swVideo { return VideoDecodingInfo(hardware: false, codec: codec, decoder: "\(sw.decoderName) (\(sw.threads) threads)") }
+        return VideoDecodingInfo(hardware: true, codec: codec, decoder: hwVideo != nil ? "VideoToolbox (in-app session)" : "VideoToolbox (display layer)")
     }
 
     static func isHDR(_ fd: CMFormatDescription) -> Bool {

@@ -609,6 +609,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func updateTitleTags() {
         titleTags.decoding = engine?.videoDecoding; titleTags.hdr = engine?.hdrFormat; titleTags.hdrOutput = settings.hdrEnabled
         if let e = engine { titleTags.engine = (e.kind.tagName, e.mediaInfo.engine.isEmpty ? e.kind.label : e.mediaInfo.engine) }
+        titleTags.edrHeadroom = Double(window?.screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1)
         DispatchQueue.main.async { [weak self] in self?.fitTitle() }
         // AVFoundation fills these in asynchronously; refresh once more shortly after.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in

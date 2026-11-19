@@ -149,7 +149,9 @@ struct AudioTrackInfo: Identifiable, Equatable {
 
 struct VideoDecodingInfo: Equatable {
     let hardware: Bool
-    let detail: String          // e.g. "HEVC · VideoToolbox (media engine)" / "AV1 · dav1d, 8 threads"
+    let codec: String           // "HEVC", "AV1", …
+    let decoder: String         // "VideoToolbox", "dav1d (8 threads)", …
+    var detail: String { "\(codec) · \(hardware ? "hardware" : "software") (\(decoder))" }
 }
 
 struct ChapterInfo: Equatable {
