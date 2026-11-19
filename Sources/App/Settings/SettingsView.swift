@@ -54,6 +54,7 @@ private struct GeneralTab: View {
             }
             Section("Behaviour") {
                 Toggle("Resume where I left off", isOn: $s.resumePlayback)
+                Toggle("Keep playback history (Window › Playback History)", isOn: $s.keepHistory)
                 LabeledContent("Hide controls after") {
                     Slider(value: $s.controlsHideDelay, in: 1...6, step: 0.5) { EmptyView() }.frame(width: 180)
                     Text(String(format: "%.1f s", s.controlsHideDelay)).monospacedDigit().frame(width: 44)

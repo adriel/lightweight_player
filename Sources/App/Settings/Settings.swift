@@ -26,6 +26,7 @@ final class Settings: ObservableObject {
     @Published var volumeStep: Double { didSet { d.set(volumeStep, forKey: "volumeStep") } }
     @Published var accurateSeek: Bool { didSet { d.set(accurateSeek, forKey: "accurateSeek") } }
     @Published var resumePlayback: Bool { didSet { d.set(resumePlayback, forKey: "resumePlayback") } }
+    @Published var keepHistory: Bool { didSet { d.set(keepHistory, forKey: "keepHistory") } }
     @Published var volume: Double { didSet { d.set(volume, forKey: "volume") } }
     @Published var controlsHideDelay: Double { didSet { d.set(controlsHideDelay, forKey: "controlsHideDelay") } }
 
@@ -75,7 +76,7 @@ final class Settings: ObservableObject {
 
     private init() {
         d.register(defaults: [
-            "seekStep": 5.0, "longSeekStep": 30.0, "volumeStep": 5.0, "accurateSeek": true, "resumePlayback": true,
+            "seekStep": 5.0, "longSeekStep": 30.0, "volumeStep": 5.0, "accurateSeek": true, "resumePlayback": true, "keepHistory": true,
             "volume": 1.0, "controlsHideDelay": 2.0,
             "autoCrop": true, "hdrEnabled": true, "fullScreenCoversNotch": false, "nativeFullScreen": false, "brightness": 0.0, "gamma": 1.0, "contrast": 1.0,
             "subtitleMode": SubtitleMode.forcedOnly.rawValue, "subtitleFontSize": 1.0, "loadSidecarSubtitles": true, "dtsCoreOnly": false, "useMediaExtensions": false,
@@ -86,6 +87,7 @@ final class Settings: ObservableObject {
         volumeStep = d.double(forKey: "volumeStep")
         accurateSeek = d.bool(forKey: "accurateSeek")
         resumePlayback = d.bool(forKey: "resumePlayback")
+        keepHistory = d.bool(forKey: "keepHistory")
         volume = d.double(forKey: "volume")
         controlsHideDelay = d.double(forKey: "controlsHideDelay")
         autoCrop = d.bool(forKey: "autoCrop")

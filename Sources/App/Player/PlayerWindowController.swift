@@ -63,6 +63,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         saveResumePosition()
         closeEngine()
         currentURL = url
+        PlaybackHistory.shared.didOpen(url, key: resumeKey(url), name: url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent)
         color = settings.colorAdjustment(for: resumeKey(url)) ?? (0, 1, 1)
         claimColorSliders()
         window?.title = url.isFileURL ? url.lastPathComponent : (url.lastPathComponent.removingPercentEncoding ?? url.absoluteString)
@@ -338,8 +339,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func saveResumePosition() {
         lastResumeSave = Date()
-        guard settings.resumePlayback, let engine, let url = currentURL, engine.duration > 0 else { return }
+        guard let engine, let url = currentURL, engine.duration > 0 else { return }
         let t = engine.currentTime
+        PlaybackHistory.shared.updateProgress(key: resumeKey(url), position: t, duration: engine.duration)
+        guard settings.resumePlayback else { return }
         settings.setResumePosition(t > 5 && t < engine.duration - 10 ? t : nil, for: resumeKey(url))
     }
 

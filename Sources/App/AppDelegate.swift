@@ -23,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
         if let a = args.first { openURLs([a.contains("://") ? URL(string: a)! : URL(fileURLWithPath: a)]) }
         DispatchQueue.main.async { [self] in
-            if players.isEmpty && !openedAtLaunch { newPlayer().showWindow(nil) }
+            if players.isEmpty && !openedAtLaunch { showWelcome(nil) }
             if CommandLine.arguments.contains("--settings") { showSettings(nil) }
             if CommandLine.arguments.contains("--inspector") { DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.toggleInspector(nil) } }
         }
@@ -36,9 +36,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
 
+    // MARK: Welcome window & history
+
+    private lazy var welcome: WelcomeWindowController = {
+        let w = WelcomeWindowController()
+        w.onOpenURL = { [weak self] u in self?.openURLs([u]) }
+        w.onOpenFile = { [weak self] in self?.openDocument(nil) }
+        w.onOpenLocation = { [weak self] in self?.openURLPrompt(nil) }
+        return w
+    }()
+    private var historyWindow: PlaybackHistoryWindowController?
+
+    @objc func showWelcome(_ sender: Any?) {
+        welcome.showWindow(nil)
+        NSApp.activate()
+    }
+
+    @objc func showPlaybackHistory(_ sender: Any?) {
+        if historyWindow == nil {
+            let h = PlaybackHistoryWindowController()
+            h.onOpen = { [weak self] u in self?.openURLs([u]) }
+            historyWindow = h
+        }
+        historyWindow?.showWindow(nil)
+    }
+
     private func newPlayer() -> PlayerWindowController {
         let p = PlayerWindowController()
-        p.onClose = { [weak self] c in self?.players.removeAll { $0 === c } }
+        p.onClose = { [weak self] c in
+            guard let self else { return }
+            self.players.removeAll { $0 === c }
+            // Last player closed: back to the start window instead of quitting (like IINA).
+            if self.players.isEmpty { DispatchQueue.main.async { self.showWelcome(nil) } }
+        }
         players.append(p)
         return p
     }
@@ -52,7 +82,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func openURLs(_ urls: [URL]) {
         guard let u = urls.first else { return }
         if WebLink.handles(u) { openWebLink(u); return }
-        targetPlayer().open(u)
+        let p = targetPlayer()
+        p.showWindow(nil)
+        p.open(u)
+        if welcome.window?.isVisible == true { welcome.close() }
     }
 
     /// `lightplayer://open?url=<percent-encoded http(s) URL>[&full_screen=1][&new_window=1]` — lets a web page
@@ -82,6 +115,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openURLPrompt(_ sender: Any?) {
+        if welcome.window?.isVisible == true, players.isEmpty || welcome.window?.isKeyWindow == true {
+            OpenLocationSheet.present(on: welcome.window) { [weak self] url in self?.openURLs([url]) }
+            return
+        }
         let target = targetPlayer()
         if target.window?.isVisible != true { target.showWindow(nil) }
         OpenLocationSheet.present(on: target.window) { [weak self, weak target] url in
@@ -173,6 +210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let window = NSMenu(title: "Window")
         window.addItem(item("Inspector", #selector(toggleInspector(_:)), "i", target: self))
+        window.addItem(item("Playback History", #selector(showPlaybackHistory(_:)), "h", [.command, .shift], target: self))
+        window.addItem(item("Welcome to LightPlayer", #selector(showWelcome(_:)), "1", [.command, .shift], target: self))
         window.addItem(.separator())
         window.addItem(item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"))
         window.addItem(item("Zoom", #selector(NSWindow.performZoom(_:)), ""))

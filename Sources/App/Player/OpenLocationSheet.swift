@@ -10,7 +10,9 @@ enum OpenLocationSheet {
         let close = { if let w = sheetWindow { (w.sheetParent ?? parent)?.endSheet(w); w.orderOut(nil) } }
         let clip = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let initial = clip.flatMap { OpenLocationView.validURL($0) != nil ? $0 : nil } ?? ""
-        let view = OpenLocationView(text: initial, onOpen: { url in close(); open(url) }, onCancel: { close() })
+        // Never wider than the window it hangs from (minus a margin), so it doesn't overhang narrow players.
+        let width = min(520, max(380, (parent?.frame.width ?? 560) - 40))
+        let view = OpenLocationView(text: initial, width: width, onOpen: { url in close(); open(url) }, onCancel: { close() })
         let host = NSHostingController(rootView: view)
         host.sizingOptions = [.preferredContentSize]
         let w = NSWindow(contentViewController: host)
@@ -22,6 +24,7 @@ enum OpenLocationSheet {
 
 struct OpenLocationView: View {
     @State var text: String
+    var width: CGFloat = 520
     let onOpen: (URL) -> Void
     let onCancel: () -> Void
     @FocusState private var focused: Bool
@@ -70,7 +73,7 @@ struct OpenLocationView: View {
             }
         }
         .padding(20)
-        .frame(width: 520)
+        .frame(width: width)
         .onAppear { focused = true }
     }
 
@@ -85,7 +88,7 @@ struct OpenLocationView: View {
                 let file = (u.lastPathComponent.removingPercentEncoding ?? u.lastPathComponent)
                 if !file.isEmpty && file != "/" {
                     Text("›").foregroundStyle(.tertiary)
-                    Text(file).lineLimit(1).truncationMode(.middle).layoutPriority(-1)
+                    MediaNameView(fileName: file)
                 }
             } else if trimmed.isEmpty {
                 Text("Paste or type a link. user:password@host is sent as Basic authentication.")
