@@ -27,6 +27,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lwplayer.LightPlayer
         PRODUCT_NAME: LightPlayer
+        LP_URL_SCHEME: lightplayer
         INFOPLIST_FILE: Sources/App/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/App/LightPlayer.entitlements
         ENABLE_HARDENED_RUNTIME: NO
@@ -50,6 +51,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lwplayer.LightPlayer.bench
         PRODUCT_NAME: LightBench
+        LP_URL_SCHEME: lightbench
         INFOPLIST_FILE: Sources/App/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/App/LightPlayer.entitlements
         ENABLE_HARDENED_RUNTIME: NO

@@ -24,6 +24,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var pendingResume: Double?
     var onClose: ((PlayerWindowController) -> Void)?
     private var openStarted = Date()
+    /// Set by web links with `full_screen=1`.
+    var enterFullScreenWhenReady = false
     private static let openDebug = ProcessInfo.processInfo.environment["LP_OPEN_DEBUG"] != nil
 
     init() {
@@ -91,6 +93,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             setupSubtitles()
             engine.setHDR(settings.hdrEnabled)
             settings.nowPlayingHDR = engine.isHDRVideo
+            updateChapterMarkers()
+            if enterFullScreenWhenReady { enterFullScreenWhenReady = false; if !isFullScreen { toggleFullScreen() } }
             if let t = pendingResume, t < engine.duration - 10 {
                 engine.seek(to: t, accurate: false)
                 playerView.flash("Resumed at \(formatTime(t))")
@@ -397,6 +401,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             playerView.flash(settings.autoCrop ? "Auto-crop on" : "Auto-crop off")
             return true
         case "s": cycleSubtitles(); return true
+        case "a": cycleAudioTrack(nil); return true
+        case ".": stepForward(nil); return true
+        case ",": stepBackward(nil); return true
+        default: break
+        }
+        switch e.keyCode {
+        case 116: previousChapter(nil); return true     // Page Up (fn+↑)
+        case 121: nextChapter(nil); return true         // Page Down (fn+↓)
         default: return false
         }
     }
@@ -464,7 +476,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         playerView.controlBar.setVolume(settings.volume, muted: muted)
         playerView.flash(muted ? "Muted" : "🔊 \(Int(settings.volume * 100))%")
     }
-    func controlBarTimeString(at fraction: Double) -> String { formatTime(fraction * (engine?.duration ?? 0)) }
+    func controlBarTimeString(at fraction: Double) -> String {
+        let t = fraction * (engine?.duration ?? 0)
+        guard let ch = engine?.chapters.last(where: { $0.start <= t + 0.01 }) else { return formatTime(t) }
+        return formatTime(t) + "  " + ch.title
+    }
     func controlBarShowSettings() { (NSApp.delegate as? AppDelegate)?.showSettings(nil) }
     func controlBarTogglePiP() {
         guard let pip else { return }
@@ -473,6 +489,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     func controlBarShowSubtitleMenu(from view: NSView) {
         let menu = NSMenu()
+        if let tracks = engine?.audioTracks, tracks.count > 1 {
+            menu.addItem(NSMenuItem.sectionHeader(title: "Audio"))
+            for item in audioTrackItems() { menu.addItem(item) }
+            menu.addItem(.separator())
+            menu.addItem(NSMenuItem.sectionHeader(title: "Subtitles"))
+        }
         let off = NSMenuItem(title: "Off", action: #selector(pickSubtitle(_:)), keyEquivalent: "")
         off.tag = -1; off.target = self; off.state = selectedSubtitle == nil ? .on : .off
         menu.addItem(off)
@@ -540,6 +562,88 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     @objc private func pickSubtitle(_ item: NSMenuItem) { selectSubtitle(item.tag < 0 ? nil : item.tag) }
+
+    // MARK: Audio tracks
+
+    func audioTrackItems() -> [NSMenuItem] {
+        guard let engine else { return [] }
+        return engine.audioTracks.map { t in
+            let i = NSMenuItem(title: t.displayName, action: #selector(pickAudioTrack(_:)), keyEquivalent: "")
+            i.tag = t.id; i.target = self
+            i.state = engine.selectedAudioTrack == t.id ? .on : .off
+            return i
+        }
+    }
+    @objc private func pickAudioTrack(_ item: NSMenuItem) { setAudioTrack(item.tag) }
+    @objc func cycleAudioTrack(_ sender: Any?) {
+        guard let engine, engine.audioTracks.count > 1 else { playerView.flash("Only one audio track"); return }
+        let ids = engine.audioTracks.map(\.id)
+        let i = ids.firstIndex(of: engine.selectedAudioTrack ?? -1) ?? -1
+        setAudioTrack(ids[(i + 1) % ids.count])
+    }
+    private func setAudioTrack(_ id: Int) {
+        guard let engine, let t = engine.audioTracks.first(where: { $0.id == id }) else { return }
+        engine.selectAudioTrack(id)
+        playerView.flash("Audio: " + t.displayName)
+    }
+
+    // MARK: Frame step & chapters
+
+    private func updateChapterMarkers() {
+        guard let engine, engine.duration > 0 else { return }
+        playerView.controlBar.seek.markers = engine.chapters.map { $0.start / engine.duration }.filter { $0 > 0.001 && $0 < 0.999 }
+        // AVFoundation loads chapters asynchronously; refresh once more shortly after.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, let e = self.engine, e.duration > 0 else { return }
+            self.playerView.controlBar.seek.markers = e.chapters.map { $0.start / e.duration }.filter { $0 > 0.001 && $0 < 0.999 }
+        }
+    }
+
+    @objc func stepForward(_ sender: Any?) { step(true) }
+    @objc func stepBackward(_ sender: Any?) { step(false) }
+    private func step(_ forward: Bool) {
+        guard let engine else { return }
+        engine.stepFrame(forward: forward)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            guard let self, let e = self.engine else { return }
+            self.playerView.flash(primary: self.osdTime(e.currentTime) + String(format: ".%02d", Int((e.currentTime.truncatingRemainder(dividingBy: 1)) * 100)),
+                                  secondary: self.osdTime(e.duration), progress: e.duration > 0 ? e.currentTime / e.duration : 0)
+        }
+    }
+
+    @objc func nextChapter(_ sender: Any?) {
+        guard let engine else { return }
+        let t = engine.currentTime
+        guard let ch = engine.chapters.first(where: { $0.start > t + 0.5 }) else { playerView.flash("Last chapter"); return }
+        jumpToChapter(ch)
+    }
+    @objc func previousChapter(_ sender: Any?) {
+        guard let engine else { return }
+        let t = engine.currentTime
+        // Like a CD player: back to the start of this chapter, or the previous one if we're near its start.
+        let before = engine.chapters.filter { $0.start < t - 2 }
+        guard let ch = before.last ?? engine.chapters.first else { playerView.flash("No chapters"); return }
+        jumpToChapter(ch)
+    }
+    @objc func pickChapter(_ item: NSMenuItem) {
+        guard let engine, engine.chapters.indices.contains(item.tag) else { return }
+        jumpToChapter(engine.chapters[item.tag])
+    }
+    private func jumpToChapter(_ ch: ChapterInfo) {
+        guard let engine else { return }
+        engine.seek(to: ch.start, accurate: true)
+        playerView.flash(ch.title)
+    }
+    func chapterItems() -> [NSMenuItem] {
+        guard let engine else { return [] }
+        let t = engine.currentTime
+        let current = engine.chapters.lastIndex { $0.start <= t + 0.01 }
+        return engine.chapters.enumerated().map { i, ch in
+            let item = NSMenuItem(title: "\(formatTime(ch.start))  \(ch.title)", action: #selector(pickChapter(_:)), keyEquivalent: "")
+            item.tag = i; item.target = self; item.state = i == current ? .on : .off
+            return item
+        }
+    }
 
     private func cycleSubtitles() {
         let ids: [Int?] = [nil] + subtitleTracks.filter { $0.kind == .text }.map(\.id)

@@ -136,7 +136,14 @@ final class SampleBufferEngine: PlayerEngine {
                 demuxer = d
                 _duration = d.duration
                 let hdr = d.videoFormat.map(FFDemuxer.isHDR) ?? false
-                DispatchQueue.main.async { self.isHDRVideo = hdr }
+                let tracks = d.audioStreams, chapters = d.chapters, audioIdx = Int(d.audioIndex)
+                let frame = d.frameRateInfo.map { (1 / $0.fps, $0.base) }
+                DispatchQueue.main.async {
+                    self.isHDRVideo = hdr
+                    self.audioTracks = tracks; self.chapters = chapters
+                    self.selectedAudioTrack = audioIdx >= 0 ? audioIdx : nil
+                    if let frame { self.frameDuration = frame.0; self.frameBase = frame.1 }
+                }
                 let w = d.warnings.map(EngineWarning.init)
                 let n = d.notices
                 let fr = d.frameRateInfo
@@ -278,6 +285,38 @@ final class SampleBufferEngine: PlayerEngine {
     }
 
     private(set) var isHDRVideo = false
+    private(set) var audioTracks: [AudioTrackInfo] = []
+    private(set) var selectedAudioTrack: Int?
+    private(set) var chapters: [ChapterInfo] = []
+    private var frameDuration = 1.0 / 30, frameBase = 0.0
+
+    func selectAudioTrack(_ id: Int) {
+        guard id != selectedAudioTrack else { return }
+        let t = currentTime
+        queue.async { [self] in
+            guard let demuxer, demuxer.selectAudio(Int32(id)) else { return }
+            DispatchQueue.main.async {
+                self.selectedAudioTrack = id
+                self.seek(to: t, accurate: true)       // refill both renderers from here with the new track
+            }
+        }
+    }
+
+    /// Frame step (paused): forward moves the clock to the next frame (already decoded ahead); backward is a
+    /// frame-accurate seek to the previous frame.
+    func stepFrame(forward: Bool) {
+        pause()
+        let fd = frameDuration
+        let cur = frameBase + ((currentTime - frameBase) / fd + 1e-3).rounded(.down) * fd
+        if forward {
+            let next = cur + fd
+            queue.async { [self] in
+                synchronizer.setRate(0, time: CMTime(seconds: next + 1e-4, preferredTimescale: 1_000_000))
+            }
+        } else {
+            seek(to: max(0, cur - fd + 1e-4), accurate: true)
+        }
+    }
 
     func pause() {
         wantsPlay = false

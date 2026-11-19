@@ -51,7 +51,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func openURLs(_ urls: [URL]) {
         guard let u = urls.first else { return }
+        if WebLink.handles(u) { openWebLink(u); return }
         targetPlayer().open(u)
+    }
+
+    /// `lightplayer://open?url=<percent-encoded http(s) URL>[&full_screen=1][&new_window=1]` — lets a web page
+    /// hand a video link to the player (same shape as IINA's `iina://open?url=`).
+    private func openWebLink(_ link: URL) {
+        guard let req = WebLink(link) else {
+            let a = NSAlert()
+            a.messageText = "Can't open this link"
+            a.informativeText = "LightPlayer links must carry an http or https video address, e.g. lightplayer://open?url=https%3A%2F%2Fexample.com%2Fvideo.mp4"
+            a.runModal()
+            return
+        }
+        let p = req.newWindow ? newPlayer() : targetPlayer()
+        p.showWindow(nil)
+        p.enterFullScreenWhenReady = req.fullScreen
+        p.open(req.video)
+        NSApp.activate()
     }
 
     // MARK: Actions
@@ -130,6 +148,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.addItem(item("Fit to Screen", #selector(PlayerWindowController.fitToScreen(_:)), "3"))
         main.addItem(withTitle: "View", action: nil, keyEquivalent: "").submenu = view
 
+        let playback = NSMenu(title: "Playback")
+        playback.addItem(item("Next Frame   ( . )", #selector(PlayerWindowController.stepForward(_:))))
+        playback.addItem(item("Previous Frame   ( , )", #selector(PlayerWindowController.stepBackward(_:))))
+        playback.addItem(.separator())
+        playback.addItem(item("Next Chapter   ( fn ↓ )", #selector(PlayerWindowController.nextChapter(_:))))
+        playback.addItem(item("Previous Chapter   ( fn ↑ )", #selector(PlayerWindowController.previousChapter(_:))))
+        let chapters = NSMenuItem(title: "Chapters", action: nil, keyEquivalent: "")
+        chapters.submenu = NSMenu(title: "Chapters"); chapters.submenu?.delegate = self; chapters.submenu?.identifier = .init("chapters")
+        playback.addItem(chapters)
+        main.addItem(withTitle: "Playback", action: nil, keyEquivalent: "").submenu = playback
+
+        let audio = NSMenu(title: "Audio")
+        let tracks = NSMenuItem(title: "Audio Track", action: nil, keyEquivalent: "")
+        tracks.submenu = NSMenu(title: "Audio Track"); tracks.submenu?.delegate = self; tracks.submenu?.identifier = .init("audioTracks")
+        audio.addItem(tracks)
+        audio.addItem(item("Next Audio Track   ( A )", #selector(PlayerWindowController.cycleAudioTrack(_:))))
+        main.addItem(withTitle: "Audio", action: nil, keyEquivalent: "").submenu = audio
+
         let window = NSMenu(title: "Window")
         window.addItem(item("Inspector", #selector(toggleInspector(_:)), "i", target: self))
         window.addItem(.separator())
@@ -178,5 +214,41 @@ struct VideoAdjustView: View {
             HStack { Text(title); Spacer(); Text(format(value.wrappedValue)).monospacedDigit().foregroundStyle(.secondary) }
             Slider(value: value, in: range)
         }
+    }
+}
+
+extension AppDelegate: NSMenuDelegate {
+    /// Fills the Audio Track / Chapters submenus from the frontmost player when they open.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let player = players.first { $0.window?.isKeyWindow == true } ?? players.first { $0.window?.isMainWindow == true }
+        let items = menu.identifier?.rawValue == "chapters" ? player?.chapterItems() ?? [] : player?.audioTrackItems() ?? []
+        if items.isEmpty { menu.addItem(withTitle: menu.identifier?.rawValue == "chapters" ? "No Chapters" : "No Audio Tracks", action: nil, keyEquivalent: "") }
+        items.forEach(menu.addItem)
+    }
+}
+
+/// Parsed `lightplayer://` link. Only http(s) videos are accepted: a web page must not be able to make the
+/// player open local files.
+struct WebLink {
+    let video: URL
+    let fullScreen: Bool
+    let newWindow: Bool
+
+    static func handles(_ u: URL) -> Bool {
+        guard let s = u.scheme?.lowercased() else { return false }
+        return s == "lightplayer" || s == "lightbench"
+    }
+
+    init?(_ link: URL) {
+        guard WebLink.handles(link), let c = URLComponents(url: link, resolvingAgainstBaseURL: false),
+              ["open", "weblink", "play"].contains(c.host?.lowercased() ?? ""),
+              let raw = c.queryItems?.first(where: { $0.name == "url" })?.value,
+              let v = URL(string: raw), let scheme = v.scheme?.lowercased(), scheme == "http" || scheme == "https", v.host != nil
+        else { return nil }
+        func flag(_ n: String) -> Bool { ["1", "true", "yes"].contains(c.queryItems?.first(where: { $0.name == n })?.value?.lowercased() ?? "") }
+        video = v
+        fullScreen = flag("full_screen") || flag("fullscreen")
+        newWindow = flag("new_window")
     }
 }

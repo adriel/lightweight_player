@@ -104,6 +104,47 @@ final class FFDemuxer {
         collectSubtitleStreams()
     }
 
+    /// Audio streams (for the track picker).
+    var audioStreams: [AudioTrackInfo] {
+        guard let ctx else { return [] }
+        var out: [AudioTrackInfo] = []
+        for i in 0..<Int(ctx.pointee.nb_streams) {
+            let st = ctx.pointee.streams[i]!.pointee
+            let par = st.codecpar.pointee
+            guard par.codec_type == AVMEDIA_TYPE_AUDIO else { continue }
+            func tag(_ k: String) -> String? { av_dict_get(st.metadata, k, nil, 0).map { String(cString: $0.pointee.value) } }
+            let codec = String(cString: avcodec_get_name(par.codec_id)).uppercased().replacingOccurrences(of: "EAC3", with: "E-AC-3").replacingOccurrences(of: "AC3", with: "AC-3")
+            let ch = Int(par.ch_layout.nb_channels)
+            let chs = ch == 6 ? "5.1" : ch == 8 ? "7.1" : ch == 2 ? "stereo" : ch == 1 ? "mono" : "\(ch) ch"
+            out.append(AudioTrackInfo(id: i, title: tag("title") ?? tag("handler_name").flatMap { $0.contains("Handler") ? nil : $0 } ?? "",
+                                      language: tag("language"), detail: "\(codec) \(chs)", isDefault: st.disposition & AV_DISPOSITION_DEFAULT != 0))
+        }
+        return out
+    }
+
+    /// Switch the demuxed audio stream. Call on the demux queue; the caller re-seeks to refill.
+    func selectAudio(_ index: Int32) -> Bool {
+        guard let ctx, index != audioIndex, index >= 0, index < Int32(ctx.pointee.nb_streams),
+              stream(index).pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO else { return false }
+        if audioIndex >= 0 { stream(audioIndex).pointee.discard = AVDISCARD_ALL }
+        audioIndex = index
+        stream(index).pointee.discard = AVDISCARD_DEFAULT
+        swAudio = nil; audioFormat = nil
+        buildAudioFormat()
+        return audioIndex >= 0
+    }
+
+    /// Chapters from the container (start time + title).
+    var chapters: [ChapterInfo] {
+        guard let ctx, ctx.pointee.nb_chapters > 0 else { return [] }
+        return (0..<Int(ctx.pointee.nb_chapters)).compactMap { i in
+            guard let ch = ctx.pointee.chapters[i]?.pointee else { return nil }
+            let t = Double(ch.start) * av_q2d(ch.time_base)
+            let title = av_dict_get(ch.metadata, "title", nil, 0).map { String(cString: $0.pointee.value) } ?? "Chapter \(i + 1)"
+            return ChapterInfo(start: t, title: title)
+        }.sorted { $0.start < $1.start }
+    }
+
     private func collectSubtitleStreams() {
         guard let ctx else { return }
         let textCodecs: Set<String> = ["subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text", "microdvd", "sami"]

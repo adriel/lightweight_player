@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Open in LightPlayer — example</title>
+<!--
+  LightPlayer registers the lightplayer:// URL scheme (same idea as IINA's iina://open?url=).
+
+    lightplayer://open?url=<percent-encoded http(s) video URL>[&full_screen=1][&new_window=1]
+
+  Only http/https video URLs are accepted, so a page can't make the player open local files.
+  The browser asks the user once before handing a link to the app.
+-->
+<style>body{font:15px -apple-system,sans-serif;margin:40px} a.play{display:inline-block;padding:8px 14px;border-radius:8px;background:#0a84ff;color:#fff;text-decoration:none}</style>
+
+<p><a class="play" id="demo" href="#">▶︎ Play in LightPlayer</a></p>
+<p><a class="play" id="demo-fs" href="#">▶︎ Play full screen</a></p>
+
+<script>
+  // Build a LightPlayer link for any direct video URL (mp4, mkv, webm, ts …).
+  function lightPlayerLink(videoURL, { fullScreen = false, newWindow = false } = {}) {
+    let link = 'lightplayer://open?url=' + encodeURIComponent(videoURL);
+    if (fullScreen) link += '&full_screen=1';
+    if (newWindow) link += '&new_window=1';
+    return link;
+  }
+
+  const video = 'https://example.com/videos/episode-1.mkv';   // ← your video URL
+  document.getElementById('demo').href = lightPlayerLink(video);
+  document.getElementById('demo-fs').href = lightPlayerLink(video, { fullScreen: true });
+</script>

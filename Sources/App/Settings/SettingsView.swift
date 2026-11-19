@@ -65,7 +65,7 @@ private struct GeneralTab: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Shortcuts") {
-                Text("Double-click video: full screen · Esc: leave full screen · Space: play/pause · M: mute · S: cycle subtitles · C: toggle black-bar crop · F: full screen · ⌘I: inspector")
+                Text("Double-click video: full screen · Esc: leave full screen · Space: play/pause · ← →: skip (hold to scrub) · ↑ ↓: volume · . / , : next / previous frame · fn↓ / fn↑: next / previous chapter · A: next audio track · S: cycle subtitles · M: mute · C: toggle black-bar crop · F: full screen · ⌘0–⌘3: window size · ⌘I: inspector")
                     .font(.callout).foregroundStyle(.secondary)
             }
         }

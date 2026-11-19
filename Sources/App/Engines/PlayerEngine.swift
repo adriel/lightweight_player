@@ -60,6 +60,14 @@ protocol PlayerEngine: AnyObject {
     func statusRows() -> [MediaInfo.Row]
     /// The decoded frame currently on screen (for black-bar detection); nil if unavailable.
     func snapshotFrame(_ completion: @escaping (CVPixelBuffer?) -> Void)
+    /// Audio tracks in the file and the one playing.
+    var audioTracks: [AudioTrackInfo] { get }
+    var selectedAudioTrack: Int? { get }
+    func selectAudioTrack(_ id: Int)
+    /// Chapters (sorted by start time).
+    var chapters: [ChapterInfo] { get }
+    /// Pause and show the next / previous frame.
+    func stepFrame(forward: Bool)
     /// Fast keyframe seek for a held arrow key; implementations show each landed frame before the next.
     func scrub(to seconds: Double, forward: Bool)
     /// HDR on: extended dynamic range output. Off: HDR video is tone-mapped to SDR.
@@ -82,6 +90,11 @@ extension PlayerEngine {
     func setHDR(_ on: Bool) {}
     var isHDRVideo: Bool { false }
     func scrub(to seconds: Double, forward: Bool) { seek(to: seconds, accurate: false) }
+    var audioTracks: [AudioTrackInfo] { [] }
+    var selectedAudioTrack: Int? { nil }
+    func selectAudioTrack(_ id: Int) {}
+    var chapters: [ChapterInfo] { [] }
+    func stepFrame(forward: Bool) {}
 }
 
 
@@ -97,6 +110,29 @@ enum EngineEvent {
 /// The app's engine choice: AVFoundation's own demuxer for local MP4/MOV (smallest index memory),
 /// FFmpeg-demux + VideoToolbox (engine C) for everything else, including every network stream
 /// (so streams get the disk-backed buffer).
+struct AudioTrackInfo: Identifiable, Equatable {
+    let id: Int                 // stream index (FFmpeg) or option index (AVFoundation)
+    var title: String
+    var language: String?
+    var detail: String          // codec / channels, e.g. "AC-3 5.1"
+    var isDefault: Bool
+    var displayName: String {
+        var parts: [String] = []
+        if !title.isEmpty { parts.append(title) }
+        if let language, !language.isEmpty, language != "und" {
+            let name = Locale.current.localizedString(forLanguageCode: language) ?? language
+            if !parts.contains(where: { $0.localizedCaseInsensitiveContains(name) }) { parts.append(name) }
+        }
+        if parts.isEmpty { parts.append("Track \(id + 1)") }
+        return parts.joined(separator: " – ") + (detail.isEmpty ? "" : "  (\(detail))")
+    }
+}
+
+struct ChapterInfo: Equatable {
+    let start: Double
+    let title: String
+}
+
 func makeEngine(for url: URL) -> PlayerEngine {
     let native: Set<String> = ["mp4", "m4v", "mov", "qt", "3gp"]
     if url.isFileURL && native.contains(url.pathExtension.lowercased()) {

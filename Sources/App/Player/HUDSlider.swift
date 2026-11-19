@@ -7,6 +7,8 @@ final class HUDSlider: NSView {
 
     var value: Double = 0 { didSet { if !isDragging { needsDisplay = true } } }
     var buffered: [ClosedRange<Double>] = [] { didSet { needsDisplay = true } }
+    /// Chapter starts (fractions): drawn as small gaps in the track, like IINA.
+    var markers: [Double] = [] { didSet { if markers != oldValue { needsDisplay = true } } }
     var knobStyle: KnobStyle = .pill
     var onChange: ((Double, _ final: Bool) -> Void)?
     /// Called with the hovered fraction (nil when the mouse leaves) — used for the seek-time tooltip.
@@ -48,6 +50,12 @@ final class HUDSlider: NSView {
         // Played part: IINA keeps it a soft grey on the seek bar, brighter on the volume slider.
         NSColor.white.withAlphaComponent(knobStyle == .bar ? 0.42 : 0.7).setFill()
         NSBezierPath(roundedRect: NSRect(x: x0, y: track.minY, width: w * v, height: trackH), xRadius: 1.5, yRadius: 1.5).fill()
+        if !markers.isEmpty, let ctx = NSGraphicsContext.current?.cgContext {
+            ctx.saveGState()
+            ctx.setBlendMode(.clear)
+            for m in markers { ctx.fill(CGRect(x: x0 + w * m - 1, y: track.minY - 0.5, width: 2, height: trackH + 1)) }
+            ctx.restoreGState()
+        }
         let kx = x0 + w * v
         NSColor.white.setFill()
         switch knobStyle {

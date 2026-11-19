@@ -91,6 +91,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
             }
             self._subtitleTracks = subs
             self.isHDRVideo = !((try? await asset.loadTracks(withMediaCharacteristic: .containsHDRVideo)) ?? []).isEmpty
+            await self.loadAudioOptionsAndChapters(asset: asset, item: item)
             await self.buildMediaInfo(asset: asset, url: url)
             if let g = try? await asset.loadMediaSelectionGroup(for: .legible) { item.select(nil, in: g) }
             self.observers.append(item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -275,6 +276,47 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     }
 
     private(set) var isHDRVideo = false
+    private(set) var audioTracks: [AudioTrackInfo] = []
+    private(set) var selectedAudioTrack: Int?
+    private(set) var chapters: [ChapterInfo] = []
+    private var audioGroup: AVMediaSelectionGroup?
+
+    @MainActor private func loadAudioOptionsAndChapters(asset: AVURLAsset, item: AVPlayerItem) async {
+        if let g = try? await asset.loadMediaSelectionGroup(for: .audible) {
+            audioGroup = g
+            let selected = item.currentMediaSelection.selectedMediaOption(in: g)
+            audioTracks = g.options.enumerated().map { i, o in
+                AudioTrackInfo(id: i, title: o.displayName == o.locale?.localizedString(forIdentifier: o.locale?.identifier ?? "") ? "" : o.displayName,
+                               language: o.extendedLanguageTag ?? o.locale?.language.languageCode?.identifier, detail: "", isDefault: o == g.defaultOption)
+            }
+            selectedAudioTrack = selected.flatMap { g.options.firstIndex(of: $0) } ?? (audioTracks.isEmpty ? nil : 0)
+        }
+        // Chapters tagged "und" don't match any preferred language: fall back to the file's own chapter locales.
+        var groups = (try? await asset.loadChapterMetadataGroups(bestMatchingPreferredLanguages: Locale.preferredLanguages)) ?? []
+        if groups.isEmpty, let locale = (try? await asset.load(.availableChapterLocales))?.first {
+            groups = (try? await asset.loadChapterMetadataGroups(withTitleLocale: locale, containingItemsWithCommonKeys: [])) ?? []
+        }
+        if !groups.isEmpty {
+            var out: [ChapterInfo] = []
+            for (i, g) in groups.enumerated() {
+                let titleItem = AVMetadataItem.metadataItems(from: g.items, filteredByIdentifier: .commonIdentifierTitle).first
+                let title = (try? await titleItem?.load(.stringValue)) ?? nil
+                out.append(ChapterInfo(start: g.timeRange.start.seconds, title: title ?? "Chapter \(i + 1)"))
+            }
+            chapters = out.sorted { $0.start < $1.start }
+        }
+    }
+
+    func selectAudioTrack(_ id: Int) {
+        guard let g = audioGroup, g.options.indices.contains(id), let item = player.currentItem else { return }
+        item.select(g.options[id], in: g)
+        selectedAudioTrack = id
+    }
+
+    func stepFrame(forward: Bool) {
+        player.pause()
+        player.currentItem?.step(byCount: forward ? 1 : -1)
+    }
 
     /// HDR off: render through a video composition whose output is BT.709 SDR (AVFoundation tone-maps).
     private var sdrComposition = false
