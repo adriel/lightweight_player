@@ -259,7 +259,7 @@ final class OSDView: NSVisualEffectView {
         let s = NSMutableAttributedString(string: primary, attributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 24, weight: .regular), .foregroundColor: NSColor.white])
         if !secondary.isEmpty { s.append(NSAttributedString(string: " / " + secondary, attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 20, weight: .regular), .foregroundColor: NSColor.white.withAlphaComponent(0.55)])) }
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 24, weight: .regular), .foregroundColor: NSColor.white.withAlphaComponent(0.55)])) }
         label.attributedStringValue = s
         barHost.isHidden = false
         barHeight.constant = 4

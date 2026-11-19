@@ -35,25 +35,27 @@ final class HUDSlider: NSView {
     override func draw(_ dirty: NSRect) {
         let v = isDragging ? dragValue : value
         let midY = bounds.midY
-        let trackH: CGFloat = knobStyle == .bar ? 2.5 : 3
+        let trackH: CGFloat = 3
         let x0 = trackInset, w = bounds.width - trackInset * 2
         let track = NSRect(x: x0, y: midY - trackH / 2, width: w, height: trackH)
-        NSColor.white.withAlphaComponent(0.25).setFill()
+        NSColor.white.withAlphaComponent(0.16).setFill()
         NSBezierPath(roundedRect: track, xRadius: trackH / 2, yRadius: trackH / 2).fill()
-        NSColor.white.withAlphaComponent(0.25).setFill()
+        NSColor.white.withAlphaComponent(0.22).setFill()
         for b in buffered {
             let r = NSRect(x: x0 + w * b.lowerBound, y: track.minY, width: max(1, w * (b.upperBound - b.lowerBound)), height: trackH)
             NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
         }
-        NSColor.white.withAlphaComponent(0.85).setFill()
-        NSBezierPath(roundedRect: NSRect(x: x0, y: track.minY, width: w * v, height: trackH), xRadius: 2, yRadius: 2).fill()
+        // Played part: IINA keeps it a soft grey on the seek bar, brighter on the volume slider.
+        NSColor.white.withAlphaComponent(knobStyle == .bar ? 0.42 : 0.7).setFill()
+        NSBezierPath(roundedRect: NSRect(x: x0, y: track.minY, width: w * v, height: trackH), xRadius: 1.5, yRadius: 1.5).fill()
         let kx = x0 + w * v
         NSColor.white.setFill()
         switch knobStyle {
         case .pill:
             NSBezierPath(roundedRect: NSRect(x: kx - 8, y: midY - 5.5, width: 16, height: 11), xRadius: 5.5, yRadius: 5.5).fill()
         case .bar:
-            NSBezierPath(roundedRect: NSRect(x: kx - 1, y: midY - 6.5, width: 2, height: 13), xRadius: 1, yRadius: 1).fill()
+            NSColor.white.withAlphaComponent(0.92).setFill()
+            NSBezierPath(roundedRect: NSRect(x: kx - 1.5, y: midY - 7.5, width: 3, height: 15), xRadius: 1.5, yRadius: 1.5).fill()
         }
     }
 
@@ -94,7 +96,7 @@ final class HUDButton: NSButton {
         bezelStyle = .regularSquare
         imagePosition = .imageOnly
         setSymbol(symbol, size: size)
-        contentTintColor = .white
+        contentTintColor = HUDButton.glyphColor
         self.target = target
         self.action = action
         setButtonType(.momentaryChange)
@@ -106,4 +108,6 @@ final class HUDButton: NSButton {
     }
     override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    /// Soft white used for all HUD glyphs (IINA's controls aren't pure white).
+    static let glyphColor = NSColor.white.withAlphaComponent(0.78)
 }

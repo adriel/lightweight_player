@@ -123,6 +123,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let view = NSMenu(title: "View")
         view.addItem(item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
+        view.addItem(.separator())
+        view.addItem(item("Half Size", #selector(PlayerWindowController.halfSize(_:)), "0"))
+        view.addItem(item("Normal Size", #selector(PlayerWindowController.normalSize(_:)), "1"))
+        view.addItem(item("Double Size", #selector(PlayerWindowController.doubleSize(_:)), "2"))
+        view.addItem(item("Fit to Screen", #selector(PlayerWindowController.fitToScreen(_:)), "3"))
         main.addItem(withTitle: "View", action: nil, keyEquivalent: "").submenu = view
 
         let window = NSMenu(title: "Window")

@@ -143,6 +143,33 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         window.setFrame(NSRect(origin: origin, size: frame.size), display: true, animate: false)
     }
 
+    // MARK: Window size (⌘0 half, ⌘1 normal, ⌘2 double, ⌘3 fit — like IINA)
+    // "Normal" = one video pixel per screen pixel (Retina-aware), clamped to the visible screen area.
+
+    @objc func halfSize(_ sender: Any?) { setVideoScale(0.5, "Half size") }
+    @objc func normalSize(_ sender: Any?) { setVideoScale(1, "Normal size") }
+    @objc func doubleSize(_ sender: Any?) { setVideoScale(2, "Double size") }
+    @objc func fitToScreen(_ sender: Any?) { setVideoScale(nil, "Fit to screen") }
+
+    private func setVideoScale(_ k: Double?, _ label: String) {
+        guard let window, let engine, !isFullScreen else { return }
+        let px = displaySize(engine.naturalSize)
+        guard px.width > 0, px.height > 0, let screen = window.screen ?? NSScreen.main else { return }
+        let vf = screen.visibleFrame
+        let fit = min(vf.width / px.width, vf.height / px.height)
+        var f = k.map { $0 / screen.backingScaleFactor } ?? fit
+        f = min(f, fit)
+        var size = NSSize(width: (px.width * f).rounded(), height: (px.height * f).rounded())
+        if size.width < window.minSize.width { size = NSSize(width: window.minSize.width, height: (window.minSize.width * px.height / px.width).rounded()) }
+        var origin = NSPoint(x: window.frame.midX - size.width / 2, y: window.frame.midY - size.height / 2)
+        if k == nil { origin = NSPoint(x: vf.midX - size.width / 2, y: vf.midY - size.height / 2) }
+        origin.x = min(max(origin.x, vf.minX), vf.maxX - size.width)
+        origin.y = min(max(origin.y, vf.minY), vf.maxY - size.height)
+        window.setFrame(NSRect(origin: origin, size: size), display: true, animate: true)
+        let shownScale = size.width / (px.width / screen.backingScaleFactor)
+        playerView.flash(k == nil || abs(shownScale - (k ?? 0)) > 0.01 ? "\(label) (\(Int((shownScale * 100).rounded()))%)" : label)
+    }
+
     // MARK: Black-bar crop
 
     private var cropDecider = CropDecider()

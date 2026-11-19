@@ -11,10 +11,10 @@ final class SettingsWindowController: NSWindowController {
         tabs.tabStyle = .toolbar
         tabs.canPropagateSelectedChildViewControllerTitle = true
         func add<V: View>(_ title: String, _ symbol: String, _ view: V) {
-            let host = NSHostingController(rootView: view.environmentObject(Settings.shared).frame(width: 620, height: 500))
+            let host = NSHostingController(rootView: view.environmentObject(Settings.shared)
+                .frame(minWidth: 560, maxWidth: .infinity, minHeight: 380, maxHeight: .infinity))
             host.title = title
-            host.sizingOptions = [.preferredContentSize]
-            host.preferredContentSize = NSSize(width: 620, height: 500)
+            host.sizingOptions = []          // the user sizes the window; switching tabs keeps that size
             let item = NSTabViewItem(viewController: host)
             item.label = title
             item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
@@ -26,12 +26,15 @@ final class SettingsWindowController: NSWindowController {
         add("Streaming", "network", StreamingTab())
         add("Formats", "film.stack", FormatsTab())
         let w = NSWindow(contentViewController: tabs)
-        w.styleMask = [.titled, .closable]
+        w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
         w.toolbarStyle = .preference
         w.isReleasedWhenClosed = false
+        w.contentMinSize = NSSize(width: 560, height: 380)
+        w.setContentSize(NSSize(width: 640, height: 540))
         super.init(window: w)
         if CommandLine.arguments.contains("--settings") { tabs.selectedTabViewItemIndex = 4 }
         w.center()
+        w.setFrameAutosaveName("SettingsWindow")      // restores the last size/position (after center as default)
     }
     required init?(coder: NSCoder) { fatalError() }
 }

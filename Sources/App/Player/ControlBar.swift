@@ -13,10 +13,11 @@ protocol ControlBarDelegate: AnyObject {
     func controlBarTimeString(at fraction: Double) -> String
 }
 
-/// IINA-style floating controls: glass panel with volume / transport / tools on top, timeline below.
+/// IINA-style floating controls: translucent HUD panel (the video tints through it) with a hairline rim,
+/// soft vibrant-white glyphs, volume / transport / tools on top, timeline below.
 final class ControlBar: NSView {
     weak var delegate: ControlBarDelegate?
-    private let glass = NSGlassEffectView()
+    private let glass = NSVisualEffectView()
     private let content = NSView()
     let seek = HUDSlider()
     let volume = HUDSlider()
@@ -34,12 +35,19 @@ final class ControlBar: NSView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        glass.cornerRadius = 12
-        glass.style = .clear
-        glass.tintColor = NSColor.black.withAlphaComponent(0.35)
-        glass.contentView = content
+        glass.material = .hudWindow
+        glass.blendingMode = .withinWindow
+        glass.state = .active
+        glass.appearance = NSAppearance(named: .vibrantDark)
+        glass.wantsLayer = true
+        glass.layer?.cornerRadius = 10
+        glass.layer?.masksToBounds = true
+        glass.layer?.borderWidth = 1
+        glass.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
         glass.translatesAutoresizingMaskIntoConstraints = false
         addSubview(glass)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        glass.addSubview(content)
 
         let rew = HUDButton(symbol: "backward.fill", size: 15, target: self, action: #selector(rewind))
         playButton = HUDButton(symbol: "play.fill", size: 21, target: self, action: #selector(togglePlay))
@@ -48,12 +56,12 @@ final class ControlBar: NSView {
         subButton = HUDButton(symbol: "captions.bubble", size: 13, target: self, action: #selector(subs(_:)))
         adjustButton = HUDButton(symbol: "slider.horizontal.3", size: 12, target: self, action: #selector(adjust(_:)))
         pipButton = HUDButton(symbol: "pip.enter", size: 13, target: self, action: #selector(pip))
-        let gear = HUDButton(symbol: "gearshape.fill", size: 13, target: self, action: #selector(settings))
+        let gear = HUDButton(symbol: "gearshape", size: 14, target: self, action: #selector(settings))
         subButton.toolTip = "Subtitles"; adjustButton.toolTip = "Brightness & gamma"; pipButton.toolTip = "Picture in Picture"; gear.toolTip = "Settings"
 
         for l in [elapsed, total] {
             l.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-            l.textColor = NSColor.white.withAlphaComponent(0.85)
+            l.textColor = HUDButton.glyphColor.withAlphaComponent(0.7)
         }
         total.alignment = .right
         let totalClick = NSClickGestureRecognizer(target: self, action: #selector(toggleRemaining))
@@ -82,6 +90,8 @@ final class ControlBar: NSView {
         NSLayoutConstraint.activate([
             glass.leadingAnchor.constraint(equalTo: leadingAnchor), glass.trailingAnchor.constraint(equalTo: trailingAnchor),
             glass.topAnchor.constraint(equalTo: topAnchor), glass.bottomAnchor.constraint(equalTo: bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: glass.leadingAnchor), content.trailingAnchor.constraint(equalTo: glass.trailingAnchor),
+            content.topAnchor.constraint(equalTo: glass.topAnchor), content.bottomAnchor.constraint(equalTo: glass.bottomAnchor),
 
             playButton.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             playButton.centerYAnchor.constraint(equalTo: content.topAnchor, constant: topY),
@@ -136,8 +146,8 @@ final class ControlBar: NSView {
     func update(time: Double, duration: Double, playing: Bool, buffered: [ClosedRange<Double>]) {
         if !seek.isDragging { seek.value = duration > 0 ? time / duration : 0 }
         if seek.buffered != buffered { seek.buffered = buffered }
-        elapsed.stringValue = formatTime(time)
-        total.stringValue = showRemaining ? "-" + formatTime(max(0, duration - time)) : formatTime(duration)
+        elapsed.stringValue = paddedTime(time)
+        total.stringValue = showRemaining ? "-" + paddedTime(max(0, duration - time)) : paddedTime(duration)
         playButton.setSymbol(playing ? "pause.fill" : "play.fill", size: 21)
     }
 
@@ -176,6 +186,12 @@ final class ControlBar: NSView {
     // Swallow clicks so they don't reach the video (double-click = fullscreen).
     override func mouseDown(with event: NSEvent) {}
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// IINA-style clock: "06:27", "2:00:27".
+func paddedTime(_ t: Double) -> String {
+    let s = Int(max(0, t.isFinite ? t : 0))
+    return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%02d:%02d", s / 60, s % 60)
 }
 
 func formatTime(_ t: Double) -> String {
