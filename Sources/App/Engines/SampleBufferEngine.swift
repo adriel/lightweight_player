@@ -136,10 +136,12 @@ final class SampleBufferEngine: PlayerEngine {
                 demuxer = d
                 _duration = d.duration
                 let hdr = d.videoFormat.map(FFDemuxer.isHDR) ?? false
+                let hdrName = d.hdrFormatName, decoding = d.videoDecoding
                 let tracks = d.audioStreams, chapters = d.chapters, audioIdx = Int(d.audioIndex)
                 let frame = d.frameRateInfo.map { (1 / $0.fps, $0.base) }
                 DispatchQueue.main.async {
-                    self.isHDRVideo = hdr
+                    self.isHDRVideo = hdr || hdrName != nil
+                    self.hdrFormat = hdrName; self.videoDecoding = decoding
                     self.audioTracks = tracks; self.chapters = chapters
                     self.selectedAudioTrack = audioIdx >= 0 ? audioIdx : nil
                     if let frame { self.frameDuration = frame.0; self.frameBase = frame.1 }
@@ -286,6 +288,8 @@ final class SampleBufferEngine: PlayerEngine {
     }
 
     private(set) var isHDRVideo = false
+    private(set) var hdrFormat: String?
+    private(set) var videoDecoding: VideoDecodingInfo?
 
     // MARK: Buffering (network streams)
     // When the demuxer blocks waiting for the network the renderers run dry while the clock keeps going, so frames

@@ -660,6 +660,32 @@ final class FFDemuxer {
         return best > 0 ? best : nil
     }
 
+    /// "Dolby Vision" / "HDR10" / "HLG" for the video stream (nil = SDR).
+    var hdrFormatName: String? {
+        guard videoIndex >= 0 else { return nil }
+        let p = stream(videoIndex).pointee.codecpar.pointee
+        for i in 0..<Int(p.nb_coded_side_data) where p.coded_side_data[i].type == AV_PKT_DATA_DOVI_CONF { return "Dolby Vision" }
+        switch p.color_trc {
+        case AVCOL_TRC_SMPTE2084: return "HDR10"
+        case AVCOL_TRC_ARIB_STD_B67: return "HLG"
+        default:
+            // Without stream probing the container may not carry colour info; the format description built from
+            // the bitstream's own VUI (hvcC/avcC) does.
+            let tf = videoFormat.flatMap { CMFormatDescriptionGetExtension($0, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String }
+            if tf == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String) { return "HDR10" }
+            if tf == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String) { return "HLG" }
+            return nil
+        }
+    }
+
+    /// Decoder in use for the video stream.
+    var videoDecoding: VideoDecodingInfo? {
+        guard videoIndex >= 0 else { return nil }
+        let codec = videoCodecName.uppercased()
+        if let sw = swVideo { return VideoDecodingInfo(hardware: false, detail: "\(codec) · software (\(sw.decoderName), \(sw.threads) threads)") }
+        return VideoDecodingInfo(hardware: true, detail: "\(codec) · hardware (VideoToolbox media engine)")
+    }
+
     static func isHDR(_ fd: CMFormatDescription) -> Bool {
         let tf = CMFormatDescriptionGetExtension(fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
         return tf == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String) || tf == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)

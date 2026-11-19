@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import AVKit
 import CoreImage
 import UniformTypeIdentifiers
@@ -24,6 +25,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var pendingResume: Double?
     var onClose: ((PlayerWindowController) -> Void)?
     private var openStarted = Date()
+    private let titleTags = TitleTagsModel()
     /// Set by web links with `full_screen=1`.
     var enterFullScreenWhenReady = false
     private static let openDebug = ProcessInfo.processInfo.environment["LP_OPEN_DEBUG"] != nil
@@ -46,6 +48,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         super.init(window: window)
         window.delegate = self
         window.keyHandler = { [weak self] e in self?.handleKey(e) ?? false }
+        let tags = NSTitlebarAccessoryViewController()
+        tags.layoutAttribute = .trailing
+        tags.view = NSHostingView(rootView: TitleTagsView(model: titleTags))
+        tags.view.frame.size = NSSize(width: 220, height: 28)
+        window.addTitlebarAccessoryViewController(tags)
+        tagsAccessory = tags
         window.fullScreenHandler = { [weak self] in self?.toggleFullScreen() }
         playerView.delegate = self
         playerView.controlBar.delegate = self
@@ -63,10 +71,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         saveResumePosition()
         closeEngine()
         currentURL = url
+        titleTags.decoding = nil; titleTags.hdr = nil
         PlaybackHistory.shared.didOpen(url, key: resumeKey(url), name: url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent)
         color = settings.colorAdjustment(for: resumeKey(url)) ?? (0, 1, 1)
         claimColorSliders()
-        window?.title = url.isFileURL ? url.lastPathComponent : (url.lastPathComponent.removingPercentEncoding ?? url.absoluteString)
+        fullTitle = url.isFileURL ? url.lastPathComponent : (url.lastPathComponent.removingPercentEncoding ?? url.absoluteString)
+        fitTitle()
         window?.representedURL = url.isFileURL ? url : nil
         if url.isFileURL { NSDocumentController.shared.noteNewRecentDocumentURL(url) }
 
@@ -97,6 +107,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             engine.setHDR(settings.hdrEnabled)
             settings.nowPlayingHDR = engine.isHDRVideo
             updateChapterMarkers()
+            updateTitleTags()
             if enterFullScreenWhenReady { enterFullScreenWhenReady = false; if !isFullScreen { toggleFullScreen() } }
             if let t = pendingResume, t < engine.duration - 10 {
                 engine.seek(to: t, accurate: false)
@@ -569,6 +580,42 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     @objc private func pickSubtitle(_ item: NSMenuItem) { selectSubtitle(item.tag < 0 ? nil : item.tag) }
 
+    // MARK: Title bar tags
+
+    /// The title is centred across the whole title bar and AppKit doesn't leave room for trailing accessories,
+    /// so shorten it (middle ellipsis) to the width that stays clear of the tags on both sides.
+    private var fullTitle = ""
+    private var tagsAccessory: NSTitlebarAccessoryViewController?
+    private func fitTitle() {
+        guard let window, !fullTitle.isEmpty else { return }
+        // Size the accessory to its tags, then keep the centred title clear of it (and of the traffic lights).
+        if let v = tagsAccessory?.view { let w = max(1, v.fittingSize.width); if abs(v.frame.width - w) > 1 { v.frame.size.width = w } }
+        let reserve = max(80, (tagsAccessory?.view.frame.width ?? 0) + 12)
+        let available = window.frame.width - 2 * reserve - 40                          // proxy icon + margins
+        let font = NSFont.titleBarFont(ofSize: NSFont.systemFontSize)
+        func width(_ s: String) -> CGFloat { (s as NSString).size(withAttributes: [.font: font]).width }
+        var title = fullTitle
+        if width(title) > available, available > 60 {
+            var keep = fullTitle.count
+            while keep > 8, width(title) > available {
+                keep -= 2
+                title = String(fullTitle.prefix(keep / 2)) + "…" + String(fullTitle.suffix(keep - keep / 2))
+            }
+        }
+        if window.title != title { window.title = title }
+    }
+    func windowDidResize(_ notification: Notification) { fitTitle() }
+
+    private func updateTitleTags() {
+        titleTags.decoding = engine?.videoDecoding; titleTags.hdr = engine?.hdrFormat; titleTags.hdrOutput = settings.hdrEnabled
+        DispatchQueue.main.async { [weak self] in self?.fitTitle() }
+        // AVFoundation fills these in asynchronously; refresh once more shortly after.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, let e = self.engine else { return }
+            self.titleTags.decoding = e.videoDecoding; self.titleTags.hdr = e.hdrFormat
+        }
+    }
+
     // MARK: File menu
 
     /// "Show Current File in Finder" only for local files; everything else stays enabled.
@@ -694,7 +741,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             s.$contrast.sink { [weak self] _ in DispatchQueue.main.async { self?.colorSettingChanged() } },
             s.$subtitleFontSize.sink { [weak self] v in self?.playerView.subtitleScale = v },
             s.$hdrEnabled.dropFirst().sink { [weak self] v in
-                DispatchQueue.main.async { self?.engine?.setHDR(v); self?.playerView.flash(v ? "HDR on" : "HDR off (tone-mapped to SDR)") }
+                DispatchQueue.main.async { self?.engine?.setHDR(v); self?.titleTags.hdrOutput = v; self?.playerView.flash(v ? "HDR on" : "HDR off (tone-mapped to SDR)") }
             },
         ]
     }

@@ -76,6 +76,10 @@ protocol PlayerEngine: AnyObject {
     func setHDR(_ on: Bool)
     /// The video track is HDR (PQ / HLG); known by the time `.ready` fires.
     var isHDRVideo: Bool { get }
+    /// How the video is decoded (nil until known / no video): hardware = VideoToolbox media engine.
+    var videoDecoding: VideoDecodingInfo? { get }
+    /// "Dolby Vision", "HDR10", "HLG" (nil for SDR).
+    var hdrFormat: String? { get }
 }
 
 extension PlayerEngine {
@@ -91,6 +95,8 @@ extension PlayerEngine {
     func snapshotFrame(_ completion: @escaping (CVPixelBuffer?) -> Void) { completion(nil) }
     func setHDR(_ on: Bool) {}
     var isHDRVideo: Bool { false }
+    var videoDecoding: VideoDecodingInfo? { nil }
+    var hdrFormat: String? { nil }
     func scrub(to seconds: Double, forward: Bool) { seek(to: seconds, accurate: false) }
     var buffering: (progress: Double, bytesPerSecond: Double)? { nil }
     var audioTracks: [AudioTrackInfo] { [] }
@@ -129,6 +135,11 @@ struct AudioTrackInfo: Identifiable, Equatable {
         if parts.isEmpty { parts.append("Track \(id + 1)") }
         return parts.joined(separator: " – ") + (detail.isEmpty ? "" : "  (\(detail))")
     }
+}
+
+struct VideoDecodingInfo: Equatable {
+    let hardware: Bool
+    let detail: String          // e.g. "HEVC · VideoToolbox (media engine)" / "AV1 · dav1d, 8 threads"
 }
 
 struct ChapterInfo: Equatable {

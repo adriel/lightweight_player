@@ -91,6 +91,17 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
             }
             self._subtitleTracks = subs
             self.isHDRVideo = !((try? await asset.loadTracks(withMediaCharacteristic: .containsHDRVideo)) ?? []).isEmpty
+            if let v = try? await asset.loadTracks(withMediaType: .video).first, let fd = (try? await v.load(.formatDescriptions))?.first {
+                let sub = CMFormatDescriptionGetMediaSubType(fd)
+                let tf = CMFormatDescriptionGetExtension(fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
+                let dv: Set<FourCharCode> = [0x64766831 /* dvh1 */, 0x64766865 /* dvhe */, 0x64766131 /* dva1 */, 0x64766176 /* dvav */]
+                self.hdrFormat = dv.contains(sub) ? "Dolby Vision"
+                    : tf == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String) ? "HDR10"
+                    : tf == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String) ? "HLG"
+                    : (self.isHDRVideo ? "HDR" : nil)
+                let hw = VTIsHardwareDecodeSupported(sub)
+                self.videoDecoding = VideoDecodingInfo(hardware: hw, detail: "\(sub.fourCCString) · " + (hw ? "hardware (VideoToolbox media engine)" : "software (AVFoundation)"))
+            }
             await self.loadAudioOptionsAndChapters(asset: asset, item: item)
             await self.buildMediaInfo(asset: asset, url: url)
             if let g = try? await asset.loadMediaSelectionGroup(for: .legible) { item.select(nil, in: g) }
@@ -276,6 +287,8 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     }
 
     private(set) var isHDRVideo = false
+    private(set) var hdrFormat: String?
+    private(set) var videoDecoding: VideoDecodingInfo?
     private(set) var audioTracks: [AudioTrackInfo] = []
     private(set) var selectedAudioTrack: Int?
     private(set) var chapters: [ChapterInfo] = []
