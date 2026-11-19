@@ -166,6 +166,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recent.submenu = recentMenu
         file.addItem(recent)
         file.addItem(.separator())
+        file.addItem(item("Playback History", #selector(showPlaybackHistory(_:)), "h", [.command, .shift], target: self))
+        file.addItem(.separator())
+        file.addItem(item("Show Current File in Finder", #selector(PlayerWindowController.showCurrentFileInFinder(_:)), ""))
+        file.addItem(.separator())
         file.addItem(item("Close", #selector(NSWindow.performClose(_:)), "w"))
         main.addItem(withTitle: "File", action: nil, keyEquivalent: "").submenu = file
 
@@ -210,7 +214,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let window = NSMenu(title: "Window")
         window.addItem(item("Inspector", #selector(toggleInspector(_:)), "i", target: self))
-        window.addItem(item("Playback History", #selector(showPlaybackHistory(_:)), "h", [.command, .shift], target: self))
         window.addItem(item("Welcome to LightPlayer", #selector(showWelcome(_:)), "1", [.command, .shift], target: self))
         window.addItem(.separator())
         window.addItem(item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"))

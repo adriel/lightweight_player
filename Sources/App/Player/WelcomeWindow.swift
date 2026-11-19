@@ -16,6 +16,7 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
         w.title = "Welcome to LightPlayer"
         w.appearance = NSAppearance(named: .darkAqua)
         w.isReleasedWhenClosed = false
+        w.isExcludedFromWindowsMenu = true          // it has its own Window menu item
         super.init(window: w)
         w.delegate = self
         let view = WelcomeView(open: { [weak self] in self?.onOpenFile?() },

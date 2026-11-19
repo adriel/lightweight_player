@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 import Combine
 
 /// One player window: owns the engine, the view hierarchy, keyboard/mouse handling and timers.
-final class PlayerWindowController: NSWindowController, NSWindowDelegate, PlayerViewDelegate, ControlBarDelegate {
+final class PlayerWindowController: NSWindowController, NSWindowDelegate, PlayerViewDelegate, ControlBarDelegate, NSMenuItemValidation {
     let playerView = PlayerView()
     private(set) var engine: PlayerEngine?
     private(set) var currentURL: URL?
@@ -568,6 +568,19 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     @objc private func pickSubtitle(_ item: NSMenuItem) { selectSubtitle(item.tag < 0 ? nil : item.tag) }
+
+    // MARK: File menu
+
+    /// "Show Current File in Finder" only for local files; everything else stays enabled.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(showCurrentFileInFinder(_:)) { return currentURL?.isFileURL == true }
+        return true
+    }
+
+    @objc func showCurrentFileInFinder(_ sender: Any?) {
+        guard let u = currentURL, u.isFileURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([u])
+    }
 
     // MARK: Audio tracks
 

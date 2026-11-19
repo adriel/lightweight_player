@@ -645,6 +645,21 @@ final class FFDemuxer {
         return true
     }
 
+    /// Duration from the container header only (no stream probing, no decoding) — for history entries.
+    static func headerDuration(path: String) -> Double? {
+        if let f = FragmentedMP4(path: path) { return f.duration }
+        var c: UnsafeMutablePointer<AVFormatContext>?
+        guard avformat_open_input(&c, path, nil, nil) >= 0, let ctx = c else { return nil }
+        defer { avformat_close_input(&c) }
+        if ctx.pointee.duration > 0 { return Double(ctx.pointee.duration) / Double(AV_TIME_BASE) }
+        var best = 0.0
+        for i in 0..<Int(ctx.pointee.nb_streams) {
+            let st = ctx.pointee.streams[i]!.pointee
+            if st.duration > 0 { best = max(best, Double(st.duration) * av_q2d(st.time_base)) }
+        }
+        return best > 0 ? best : nil
+    }
+
     static func isHDR(_ fd: CMFormatDescription) -> Bool {
         let tf = CMFormatDescriptionGetExtension(fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
         return tf == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String) || tf == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)

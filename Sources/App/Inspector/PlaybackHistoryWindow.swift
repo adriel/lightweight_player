@@ -62,22 +62,18 @@ struct PlaybackHistoryView: View {
                         .help(e.isFile ? (URL(string: e.url)?.path ?? "") : (URL(string: e.url).map(InfoFormat.safeURL) ?? ""))
                     }
                     TableColumn("Progress") { e in
-                        if e.duration > 0 {
-                            HStack(spacing: 6) {
-                                ProgressView(value: e.progress).progressViewStyle(.linear).controlSize(.small)
-                                Text(e.progress > 0.97 ? "Done" : formatTime(e.position)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                                    .frame(width: 52, alignment: .trailing)
-                            }
-                        } else if e.position > 1 {
-                            Text("at " + formatTime(e.position)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                        } else { Text("—").foregroundStyle(.tertiary) }
+                        HStack(spacing: 8) {
+                            HistoryProgressBar(fraction: e.duration > 0 ? e.progress : nil)
+                            Text(e.position > 0 ? paddedTime(e.position) : "")
+                                .monospacedDigit().frame(minWidth: 44, alignment: .leading)
+                        }
                     }
-                    .width(min: 120, ideal: 170, max: 240)
+                    .width(min: 130, ideal: 140, max: 180)
                     TableColumn("Played at") { e in
                         Text(byFolder ? e.playedAt.formatted(date: .abbreviated, time: .shortened) : e.playedAt.formatted(date: .omitted, time: .shortened))
                             .foregroundStyle(.secondary).monospacedDigit()
                     }
-                    .width(min: 80, ideal: byFolder ? 150 : 90, max: 200)
+                    .width(min: 70, ideal: byFolder ? 140 : 80, max: 180)
                 } rows: {
                     ForEach(groups) { g in
                         Section(g.title) { ForEach(g.items) { TableRow($0) } }
@@ -93,6 +89,7 @@ struct PlaybackHistoryView: View {
             }
         }
         .frame(minWidth: 520, minHeight: 280)
+        .onAppear { history.fillMissingDurations() }
         .searchable(text: $search, placement: .toolbar, prompt: "Search")
         .toolbar {
             ToolbarItem {
@@ -125,5 +122,23 @@ struct PlaybackHistoryView: View {
         let map = ["mkv": "doc-mkv", "mp4": "doc-mp4", "m4v": "doc-m4v", "mov": "doc-mov", "webm": "doc-webm", "avi": "doc-avi",
                    "ts": "doc-ts", "m2ts": "doc-ts", "mts": "doc-ts", "flv": "doc-flv"]
         return Bundle.main.image(forResource: map[(e.name as NSString).pathExtension.lowercased()] ?? "doc-video") ?? NSImage()
+    }
+}
+
+/// IINA-style progress bar: light rounded track with a hairline border, accent fill.
+struct HistoryProgressBar: View {
+    let fraction: Double?        // nil = unknown duration (empty track)
+    var body: some View {
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.07))
+                if let f = fraction, f > 0 {
+                    RoundedRectangle(cornerRadius: 3).fill(Color.accentColor)
+                        .frame(width: max(2, g.size.width * min(f, 1)))
+                }
+                RoundedRectangle(cornerRadius: 3).strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5)
+            }
+        }
+        .frame(width: 70, height: 13)
     }
 }
