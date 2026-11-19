@@ -2,9 +2,8 @@
 
 A low-RAM, hardware-accelerated video player for macOS 27+ on Apple silicon.
 
-![Player](docs/player.png)
 
-<img src="docs/inspector.png" width="400" alt="⌘I Inspector"> <img src="docs/formats.png" width="460" alt="Formats settings page">
+<img src="docs/formats.png" width="460" alt="Formats settings page">
 
 Press **⌘I** for the inspector: pipeline, decoder actually in use (VideoToolbox hardware / software, dav1d, FFmpeg audio, or a Media Extension), colour/HDR, tracks, file info and live status (buffer, disk cache, download speed, memory, CPU, display EDR headroom).
 
@@ -38,7 +37,7 @@ SCHEME=LightBench Bench/build.sh
 - Title bar tags (hover for a details panel that stays open while hovered; also shows audio decoding): the playback engine (**FFmpeg** / **AVFoundation**; hover for the full pipeline), **HW** / **SW** (hover: codec and decoder — VideoToolbox media engine, dav1d, FFmpeg) and the HDR format (**HDR10**, **Dolby Vision**, **HLG**; "→ SDR" when HDR output is off). Long titles are middle-truncated so they stay clear of the tags.
 - Welcome window (like IINA's start window): icon, version, Open… / Open URL…, and the last 9 played items (click to resume, drop a file on it). Shown at launch and when the last player closes.
 - Playback history (File › Playback History, ⇧⌘H): table of everything played with IINA-style progress bars and position, grouped by date or folder, searchable, double-click to resume, right-click Open / Show in Finder / Remove, Delete key removes. Stored in `~/Library/Application Support/LightPlayer/history.json` (owner-only; stream URLs may carry credentials); can be turned off in Settings › Playback. First run seeds it from saved resume positions.
-- Release names: scene-style file names ("Show.Name.S01E12.Episode.Title…1080p.BluRay…-GROUP.mkv") are parsed (`ReleaseName`) and shown as **Show Name S01E12** Episode Title [1080p] [BluRay] in Open Location, the Welcome list and history; anything else is shown as-is. Comparison of the considered styles: `docs/name-styles-comparison.png`.
+- Release names: scene-style file names ("Show.Name.S01E12.Episode.Title…1080p.BluRay…-GROUP.mkv") are parsed (`ReleaseName`) and shown as **Show Name S01E12** Episode Title [1080p] [BluRay] in Open Location, the Welcome list and history; anything else is shown as-is.
 - Settings › File Types: shows which app opens each format (MKV, MP4, M4V, MOV, WebM, AVI, TS, FLV) and makes LightPlayer the default per format or for all at once (`NSWorkspace.setDefaultApplication`, the same setting as Finder's Get Info › Change All).
 - Icons: app icon and per-format document icons (MKV, MP4, M4V, MOV, WebM, AVI, TS, FLV, generic) drawn by `Tools/icons/render.swift` (CoreGraphics, regenerate with `swift Tools/icons/render.swift <dir>` then `iconutil`). Document icons show in Finder for files whose default app is LightPlayer.
 - Floating control bar can be dragged anywhere in the window (like IINA): it snaps to the horizontal centre within 10 pt, showing a guide line and a trackpad alignment tick; the position is remembered as a fraction of the window (survives resizes, full screen and relaunch); double-click the bar's background to reset it.
