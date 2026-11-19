@@ -30,9 +30,11 @@ final class Settings: ObservableObject {
     @Published var controlsHideDelay: Double { didSet { d.set(controlsHideDelay, forKey: "controlsHideDelay") } }
 
     // Video
-    @Published var brightness: Double { didSet { d.set(brightness, forKey: "brightness") } }   // -0.5 ... 0.5
-    @Published var gamma: Double { didSet { d.set(gamma, forKey: "gamma") } }                  // 0.5 ... 2.0
-    @Published var contrast: Double { didSet { d.set(contrast, forKey: "contrast") } }         // 0.5 ... 1.5
+    // Colour adjustments of the *frontmost player's file* (bound to the sliders). Not global: each file keeps its
+    // own values (see colorAdjustment(for:)), and a file without saved values starts neutral.
+    @Published var brightness: Double = 0   // -0.5 ... 0.5
+    @Published var gamma: Double = 1        // 0.5 ... 2.0
+    @Published var contrast: Double = 1     // 0.5 ... 1.5
 
     /// Show HDR video (HDR10/HLG/Dolby Vision base layer) with extended dynamic range. Off: tone-mapped to SDR.
     @Published var hdrEnabled: Bool { didSet { d.set(hdrEnabled, forKey: "hdrEnabled") } }
@@ -90,9 +92,7 @@ final class Settings: ObservableObject {
         hdrEnabled = d.bool(forKey: "hdrEnabled")
         fullScreenCoversNotch = d.bool(forKey: "fullScreenCoversNotch")
         nativeFullScreen = d.bool(forKey: "nativeFullScreen")
-        brightness = d.double(forKey: "brightness")
-        gamma = d.double(forKey: "gamma")
-        contrast = d.double(forKey: "contrast")
+        d.removeObject(forKey: "brightness"); d.removeObject(forKey: "gamma"); d.removeObject(forKey: "contrast")   // old global values
         subtitleMode = SubtitleMode(rawValue: d.string(forKey: "subtitleMode") ?? "") ?? .forcedOnly
         subtitleFontSize = d.double(forKey: "subtitleFontSize")
         loadSidecarSubtitles = d.bool(forKey: "loadSidecarSubtitles")
@@ -122,6 +122,25 @@ final class Settings: ObservableObject {
     // MARK: Remembered black-bar crops (per file), so they're applied instantly next time.
 
     /// `.some(nil)` = remembered "no bars"; `nil` = unknown.
+    /// Per-file brightness / contrast / gamma (nil = never adjusted → neutral).
+    func colorAdjustment(for key: String) -> (brightness: Double, contrast: Double, gamma: Double)? {
+        guard let raw = d.dictionary(forKey: "colorAdjustments")?[key] as? [Any] else { return nil }
+        let a = raw.compactMap { ($0 as? NSNumber)?.doubleValue ?? Double("\($0)") }
+        guard a.count == 3 else { return nil }
+        return (a[0], a[1], a[2])
+    }
+
+    func setColorAdjustment(_ v: (brightness: Double, contrast: Double, gamma: Double), for key: String) {
+        var dict = d.dictionary(forKey: "colorAdjustments") ?? [:]
+        let neutral = abs(v.brightness) < 0.001 && abs(v.contrast - 1) < 0.001 && abs(v.gamma - 1) < 0.001
+        dict[key] = neutral ? nil : [v.brightness, v.contrast, v.gamma]
+        if dict.count > 500 { dict = Dictionary(uniqueKeysWithValues: dict.suffix(400).map { ($0.key, $0.value) }) }
+        d.set(dict, forKey: "colorAdjustments")
+    }
+
+    /// Which player the colour sliders currently belong to.
+    weak var colorOwner: AnyObject?
+
     func rememberedCrop(for key: String) -> CGRect?? {
         guard let v = d.dictionary(forKey: "crops")?[key] as? String else { return nil }
         return .some(v == "none" ? nil : NSRectFromString(v))

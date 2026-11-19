@@ -28,6 +28,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.lwplayer.LightPlayer
         PRODUCT_NAME: LightPlayer
         LP_URL_SCHEME: lightplayer
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: Sources/App/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/App/LightPlayer.entitlements
         ENABLE_HARDENED_RUNTIME: NO
@@ -51,6 +52,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lwplayer.LightPlayer.bench
         PRODUCT_NAME: LightBench
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Own Info.plist without document types / URL scheme: the bench build must not show up in Finder's
         # "Open With" or compete for lightplayer:// links.
         INFOPLIST_FILE: Sources/Bench/Info.plist

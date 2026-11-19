@@ -40,15 +40,16 @@ final class HUDSlider: NSView {
         let trackH: CGFloat = 3
         let x0 = trackInset, w = bounds.width - trackInset * 2
         let track = NSRect(x: x0, y: midY - trackH / 2, width: w, height: trackH)
-        NSColor.white.withAlphaComponent(0.16).setFill()
+        NSColor.white.withAlphaComponent(0.14).setFill()
         NSBezierPath(roundedRect: track, xRadius: trackH / 2, yRadius: trackH / 2).fill()
-        NSColor.white.withAlphaComponent(0.22).setFill()
+        // Downloaded parts of a stream (IINA shows them as a lighter band).
+        NSColor.white.withAlphaComponent(0.34).setFill()
         for b in buffered {
             let r = NSRect(x: x0 + w * b.lowerBound, y: track.minY, width: max(1, w * (b.upperBound - b.lowerBound)), height: trackH)
             NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
         }
         // Played part: IINA keeps it a soft grey on the seek bar, brighter on the volume slider.
-        NSColor.white.withAlphaComponent(knobStyle == .bar ? 0.42 : 0.7).setFill()
+        NSColor.white.withAlphaComponent(knobStyle == .bar ? 0.6 : 0.7).setFill()
         NSBezierPath(roundedRect: NSRect(x: x0, y: track.minY, width: w * v, height: trackH), xRadius: 1.5, yRadius: 1.5).fill()
         if !markers.isEmpty, let ctx = NSGraphicsContext.current?.cgContext {
             ctx.saveGState()

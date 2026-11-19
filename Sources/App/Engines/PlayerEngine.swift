@@ -60,6 +60,8 @@ protocol PlayerEngine: AnyObject {
     func statusRows() -> [MediaInfo.Row]
     /// The decoded frame currently on screen (for black-bar detection); nil if unavailable.
     func snapshotFrame(_ completion: @escaping (CVPixelBuffer?) -> Void)
+    /// Network streams: non-nil while playback is paused to buffer (progress 0…1, download bytes/s).
+    var buffering: (progress: Double, bytesPerSecond: Double)? { get }
     /// Audio tracks in the file and the one playing.
     var audioTracks: [AudioTrackInfo] { get }
     var selectedAudioTrack: Int? { get }
@@ -90,6 +92,7 @@ extension PlayerEngine {
     func setHDR(_ on: Bool) {}
     var isHDRVideo: Bool { false }
     func scrub(to seconds: Double, forward: Bool) { seek(to: seconds, accurate: false) }
+    var buffering: (progress: Double, bytesPerSecond: Double)? { nil }
     var audioTracks: [AudioTrackInfo] { [] }
     var selectedAudioTrack: Int? { nil }
     func selectAudioTrack(_ id: Int) {}

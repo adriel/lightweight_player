@@ -63,6 +63,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         saveResumePosition()
         closeEngine()
         currentURL = url
+        color = settings.colorAdjustment(for: resumeKey(url)) ?? (0, 1, 1)
+        claimColorSliders()
         window?.title = url.isFileURL ? url.lastPathComponent : (url.lastPathComponent.removingPercentEncoding ?? url.absoluteString)
         window?.representedURL = url.isFileURL ? url : nil
         if url.isFileURL { NSDocumentController.shared.noteNewRecentDocumentURL(url) }
@@ -320,6 +322,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         guard let engine else { return }
         tickCount += 1
         let now = engine.currentTime
+        playerView.setBuffering(engine.buffering)
         if selectedSubtitle != nil {
             playerView.showSubtitle(engine.cues.text(at: now))
             playerView.showBitmaps(engine.cues.bitmaps(at: now), videoSize: engine.naturalSize)
@@ -670,9 +673,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func observeSettings() {
         let s = settings
         settingsObservers = [
-            s.$brightness.sink { [weak self] _ in DispatchQueue.main.async { self?.applyColorAdjustments() } },
-            s.$gamma.sink { [weak self] _ in DispatchQueue.main.async { self?.applyColorAdjustments() } },
-            s.$contrast.sink { [weak self] _ in DispatchQueue.main.async { self?.applyColorAdjustments() } },
+            s.$brightness.sink { [weak self] _ in DispatchQueue.main.async { self?.colorSettingChanged() } },
+            s.$gamma.sink { [weak self] _ in DispatchQueue.main.async { self?.colorSettingChanged() } },
+            s.$contrast.sink { [weak self] _ in DispatchQueue.main.async { self?.colorSettingChanged() } },
             s.$subtitleFontSize.sink { [weak self] v in self?.playerView.subtitleScale = v },
             s.$hdrEnabled.dropFirst().sink { [weak self] v in
                 DispatchQueue.main.async { self?.engine?.setHDR(v); self?.playerView.flash(v ? "HDR on" : "HDR off (tone-mapped to SDR)") }
@@ -680,9 +683,30 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         ]
     }
 
+    // Per-file colour adjustments: the shared sliders edit the frontmost player's file; each player keeps its own
+    // values and saves them under its file.
+    private var color = (brightness: 0.0, contrast: 1.0, gamma: 1.0)
+    private var loadingColor = false
+
+    /// Make the sliders show (and edit) this player's file.
+    private func claimColorSliders() {
+        if Self.openDebug { NSLog("color: %@ → b %.2f c %.2f g %.2f", currentURL?.lastPathComponent ?? "-", color.brightness, color.contrast, color.gamma) }
+        settings.colorOwner = self
+        loadingColor = true
+        settings.brightness = color.brightness; settings.contrast = color.contrast; settings.gamma = color.gamma
+        loadingColor = false
+    }
+
+    private func colorSettingChanged() {
+        guard !loadingColor, settings.colorOwner === self else { return }
+        color = (settings.brightness, settings.contrast, settings.gamma)
+        if let u = currentURL { settings.setColorAdjustment(color, for: resumeKey(u)) }
+        applyColorAdjustments()
+    }
+
     private func applyColorAdjustments() {
         guard let host = engine?.view as? LayerHostView else { return }
-        host.setColorAdjustments(brightness: settings.brightness, contrast: settings.contrast, gamma: settings.gamma)
+        host.setColorAdjustments(brightness: color.brightness, contrast: color.contrast, gamma: color.gamma)
     }
 
     // MARK: PiP
@@ -782,6 +806,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        if settings.colorOwner !== self { claimColorSliders() }
         if let engine { settings.nowPlayingHDR = engine.isHDRVideo }
     }
 

@@ -14,6 +14,7 @@ final class PlayerView: NSView {
     private let subtitleLabel = NSTextField(wrappingLabelWithString: "")
     private let placeholder = NSTextField(labelWithString: "Drop a video here\n⌘O open file  ·  ⇧⌘O open URL")
     private let osd = OSDView()
+    private let bufferingHUD = BufferingHUD()
     private var videoView: NSView?
     private var tracking: NSTrackingArea?
     private var toastTimer: Timer?
@@ -54,6 +55,9 @@ final class PlayerView: NSView {
         osd.translatesAutoresizingMaskIntoConstraints = false
         osd.alphaValue = 0
         addSubview(osd)
+        bufferingHUD.translatesAutoresizingMaskIntoConstraints = false
+        bufferingHUD.isHidden = true
+        addSubview(bufferingHUD)
 
         controlBar.translatesAutoresizingMaskIntoConstraints = false
         addSubview(controlBar)
@@ -79,6 +83,8 @@ final class PlayerView: NSView {
             subtitleLabel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.9),
             subtitleBottom,
 
+            bufferingHUD.centerXAnchor.constraint(equalTo: centerXAnchor),
+            bufferingHUD.centerYAnchor.constraint(equalTo: centerYAnchor),
             osd.topAnchor.constraint(equalTo: topAnchor, constant: 40),
             osd.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
 
@@ -233,6 +239,13 @@ final class PlayerView: NSView {
         presentOSD()
     }
 
+    /// Spinner + progress while a stream buffers (nil hides it).
+    func setBuffering(_ b: (progress: Double, bytesPerSecond: Double)?) {
+        guard let b else { if !bufferingHUD.isHidden { bufferingHUD.isHidden = true; bufferingHUD.stop() }; return }
+        bufferingHUD.update(progress: b.progress, bytesPerSecond: b.bytesPerSecond)
+        if bufferingHUD.isHidden { bufferingHUD.isHidden = false; bufferingHUD.start() }
+    }
+
     /// IINA-style OSD: large value, dimmer secondary text, thin progress bar (seek position, volume).
     func flash(primary: String, secondary: String, progress: Double) {
         osd.show(primary: primary, secondary: secondary, progress: progress)
@@ -348,5 +361,41 @@ final class OSDView: NSVisualEffectView {
         track.frame = b
         fill.frame = CGRect(x: 0, y: 0, width: max(b.height, b.width * progress), height: b.height)
         CATransaction.commit()
+    }
+}
+
+/// Centred "Buffering…" HUD: spinner, percentage of the resume threshold, download speed.
+final class BufferingHUD: NSVisualEffectView {
+    private let spinner = NSProgressIndicator()
+    private let label = NSTextField(labelWithString: "Buffering…")
+    private let detail = NSTextField(labelWithString: "")
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        material = .hudWindow; blendingMode = .withinWindow; state = .active
+        appearance = NSAppearance(named: .vibrantDark)
+        wantsLayer = true
+        layer?.cornerRadius = 14; layer?.masksToBounds = true
+        layer?.borderWidth = 0.5; layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        spinner.style = .spinning; spinner.controlSize = .regular; spinner.isDisplayedWhenStopped = false
+        label.font = .systemFont(ofSize: 14, weight: .semibold); label.textColor = .white
+        detail.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); detail.textColor = NSColor.white.withAlphaComponent(0.65)
+        let stack = NSStackView(views: [spinner, label, detail])
+        stack.orientation = .vertical; stack.spacing = 6; stack.alignment = .centerX
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 22), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -22),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 16), stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 150),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func start() { spinner.startAnimation(nil) }
+    func stop() { spinner.stopAnimation(nil) }
+    func update(progress: Double, bytesPerSecond: Double) {
+        label.stringValue = String(format: "Buffering… %d%%", Int((progress * 100).rounded()))
+        detail.stringValue = bytesPerSecond > 0 ? InfoFormat.bitrate(bytesPerSecond * 8) : "connecting…"
     }
 }

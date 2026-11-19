@@ -165,6 +165,7 @@ final class SampleBufferEngine: PlayerEngine {
                         self.synchronizer.addRenderer(self.displayLayer)
                     }
                     self.onEvent?(.ready)
+                    self.startBufferMonitor()
                     if ProcessInfo.processInfo.environment["LP_VIDEO_METRICS"] != nil {
                         self.metricsTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshMetrics(log: true) }
                     }
@@ -285,6 +286,44 @@ final class SampleBufferEngine: PlayerEngine {
     }
 
     private(set) var isHDRVideo = false
+
+    // MARK: Buffering (network streams)
+    // When the demuxer blocks waiting for the network the renderers run dry while the clock keeps going, so frames
+    // arrive late and get dropped. Like mpv's cache-pause: hold the clock while the reader is starved and resume once
+    // a few seconds of data are buffered ahead (or the download is complete). Checked 4×/s on the main thread.
+    private(set) var buffering: (progress: Double, bytesPerSecond: Double)?
+    private var bufferTimer: Timer?
+    private var hasShownFirstFrame = false
+    private static let resumeAfterSeconds = 3.0
+
+    private func startBufferMonitor() {
+        guard source != nil, bufferTimer == nil else { return }
+        bufferTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.checkBuffering() }
+    }
+
+    private func checkBuffering() {
+        guard let source else { return }
+        let st = source.stats
+        let complete = st.length > 0 && st.cachedBytes >= st.length
+        let bps = st.length > 0 && _duration > 0 ? Double(st.length) / _duration : 0      // average media bitrate
+        let need = max(Int64(bps * Self.resumeAfterSeconds), 1 << 20)
+        let stalled = source.isStalled
+        if buffering == nil {
+            // Starving while playing (or before the first frame of a stream): pause the clock and show progress.
+            guard !complete, stalled || !hasShownFirstFrame, wantsPlay || !hasShownFirstFrame else { return }
+            if hasShownFirstFrame { synchronizer.setRate(0, time: synchronizer.currentTime()) }
+        }
+        let progress = min(1, Double(st.aheadBytes) / Double(need))
+        if ProcessInfo.processInfo.environment["LP_BUFFER_DEBUG"] != nil { NSLog("buffer: stalled=%d ahead=%lld need=%lld state=%@", stalled ? 1 : 0, st.aheadBytes, need, buffering == nil ? "play" : "buffering") }
+        if complete || (!stalled && st.aheadBytes >= need && hasShownFirstFrame) {
+            if buffering != nil, wantsPlay { synchronizer.setRate(playRate, time: synchronizer.currentTime()) }
+            buffering = nil
+        } else {
+            buffering = (progress, st.bytesPerSecond)
+            // A seek or play() meanwhile restarts the clock; keep it held until enough is buffered.
+            if hasShownFirstFrame, synchronizer.rate != 0 { synchronizer.setRate(0, time: synchronizer.currentTime()) }
+        }
+    }
     private(set) var audioTracks: [AudioTrackInfo] = []
     private(set) var selectedAudioTrack: Int?
     private(set) var chapters: [ChapterInfo] = []
@@ -410,6 +449,7 @@ final class SampleBufferEngine: PlayerEngine {
 
     func close() {
         metricsTimer?.invalidate()
+        bufferTimer?.invalidate()
         displaySync?.stop()
         demuxer?.interrupt()
         source?.close()
@@ -477,6 +517,7 @@ final class SampleBufferEngine: PlayerEngine {
                 firstFrameSignaled = true
                 DispatchQueue.main.async { self.seekShown(gen) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.onEvent?(.firstFrame) }
+                DispatchQueue.main.async { self.hasShownFirstFrame = true }
                 if scrubHold { videoRenderer.stopRequestingMediaData(); return }
             }
             resumeAudioIfThrottled(gen)

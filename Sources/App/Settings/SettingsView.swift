@@ -100,7 +100,7 @@ private struct VideoTab: View {
                 slider("Gamma", $s.gamma, 0.5...2.0, "%.2f")
                 HStack { Spacer(); Button("Reset") { s.resetColor() }.disabled(!s.hasColorAdjustments) }
             } footer: {
-                Text("Adjustments are applied on the GPU with Core Image only while they differ from the defaults, so normal playback keeps the zero-copy display path.")
+                Text("Applies to the video in the front window and is remembered for that file only; other files start neutral. Applied on the GPU with Core Image only while they differ from the defaults, so normal playback keeps the zero-copy display path.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

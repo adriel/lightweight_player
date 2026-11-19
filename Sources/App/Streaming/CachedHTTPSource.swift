@@ -19,6 +19,11 @@ final class CachedHTTPSource: @unchecked Sendable {
     private var ranges = ByteRanges()
     private(set) var length: Int64 = -1
     private var readPos: Int64 = 0
+    /// True while a reader is blocked waiting for bytes that aren't downloaded yet (= the player is starving).
+    private var waitingReaders = 0
+    var isStalled: Bool { cond.withLock { waitingReaders > 0 } }
+    /// LP_NET_THROTTLE=<KB/s>: debug bandwidth cap to reproduce buffering.
+    private static let throttle = ProcessInfo.processInfo.environment["LP_NET_THROTTLE"].flatMap(Double.init).map { $0 * 1024 }
     private var downloadPos: Int64 = 0
     private var downloadEnd: Int64 = -1          // exclusive end of the current request, -1 = open-ended
     private var task: URLSessionDataTask?
@@ -107,10 +112,10 @@ final class CachedHTTPSource: @unchecked Sendable {
             if task == nil || downloadPos > offset || offset - downloadPos > 2 << 20 {
                 startDownload(from: offset)
             }
-            if !cond.wait(until: deadline) {
-                if lastError != nil || task == nil { return -1 }
-                return -1
-            }
+            waitingReaders += 1
+            let woke = cond.wait(until: deadline)
+            waitingReaders -= 1
+            if !woke { return -1 }
         }
         return -1
     }
@@ -201,6 +206,11 @@ final class CachedHTTPSource: @unchecked Sendable {
     }
 
     fileprivate func didReceive(data: Data, generation: Int) {
+        if let t = Self.throttle {
+            // Debug cap: skip stale chunks of cancelled requests first, and never sleep holding the lock.
+            guard cond.withLock({ generation == taskGeneration && !closed }) else { return }
+            usleep(UInt32(Double(data.count) / t * 1_000_000))
+        }
         cond.lock(); defer { cond.unlock() }
         guard generation == taskGeneration, !closed else { return }
         let written = data.withUnsafeBytes { pwrite(fd, $0.baseAddress, data.count, downloadPos) }
