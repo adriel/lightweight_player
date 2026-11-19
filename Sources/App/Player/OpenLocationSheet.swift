@@ -34,6 +34,17 @@ struct OpenLocationView: View {
     }
     private var url: URL? { Self.validURL(text) }
 
+    /// The site's registrable domain: "cdn3.media.example.com" → "example.com", "www.tvnz.co.nz" → "tvnz.co.nz".
+    /// IP addresses and single-label hosts are shown as they are.
+    static func siteName(_ host: String) -> String {
+        let labels = host.lowercased().split(separator: ".").map(String.init)
+        guard labels.count > 2, labels.contains(where: { $0.contains(where: \.isLetter) }) else { return host.lowercased() }
+        // Country domains with a second-level category (co.nz, com.au, org.uk, …) keep one more label.
+        let secondLevel: Set<String> = ["co", "com", "org", "net", "gov", "govt", "ac", "edu", "school", "geek", "gen", "ltd", "plc", "nhs", "mil", "or", "ne", "go"]
+        let n = labels.last!.count == 2 && secondLevel.contains(labels[labels.count - 2]) ? 3 : 2
+        return labels.suffix(n).joined(separator: ".")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 14) {
@@ -70,14 +81,11 @@ struct OpenLocationView: View {
             if let u = url {
                 let secure = u.scheme?.lowercased() == "https"
                 Image(systemName: secure ? "lock.fill" : "lock.open").foregroundStyle(secure ? Color.secondary : Color.orange)
-                Text(u.host ?? "").fontWeight(.medium).lineLimit(1)
+                Text(Self.siteName(u.host ?? "")).fontWeight(.medium).lineLimit(1).fixedSize()
                 let file = (u.lastPathComponent.removingPercentEncoding ?? u.lastPathComponent)
                 if !file.isEmpty && file != "/" {
                     Text("›").foregroundStyle(.tertiary)
                     Text(file).lineLimit(1).truncationMode(.middle).layoutPriority(-1)
-                }
-                if let user = u.user, !user.isEmpty {
-                    Text("· as \(user.removingPercentEncoding ?? user)").lineLimit(1).fixedSize()
                 }
             } else if trimmed.isEmpty {
                 Text("Paste or type a link. user:password@host is sent as Basic authentication.")
