@@ -70,11 +70,12 @@ private struct InfoTag: View {
         .popover(isPresented: $shown, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 8) {
                 Label(title, systemImage: icon).font(.headline).foregroundStyle(tint)
-                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 4) {
+                // Fixed label column; values get all the remaining width and only wrap when they're really long.
+                VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
-                        GridRow {
-                            Text(r.0).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                            Text(r.1).fixedSize(horizontal: false, vertical: true)
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(r.0).foregroundStyle(.secondary).frame(width: 64, alignment: .trailing)
+                            Text(r.1).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
