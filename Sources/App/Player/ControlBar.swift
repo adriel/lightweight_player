@@ -183,8 +183,20 @@ final class ControlBar: NSView {
     @objc private func settings() { delegate?.controlBarShowSettings() }
     @objc private func toggleRemaining() { showRemaining.toggle() }
 
-    // Swallow clicks so they don't reach the video (double-click = fullscreen).
-    override func mouseDown(with event: NSEvent) {}
+    // Dragging the bar's background moves it (buttons and sliders handle their own clicks). Clicks never reach the
+    // video underneath (double-click there = full screen).
+    var onDrag: ((_ phase: NSEvent.EventType, _ windowPoint: NSPoint) -> Void)?
+    var onResetPosition: (() -> Void)?
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 { onResetPosition?(); return }       // double-click: back to the default spot
+        NSCursor.closedHand.push(); onDrag?(.leftMouseDown, event.locationInWindow)
+    }
+    override func mouseDragged(with event: NSEvent) { onDrag?(.leftMouseDragged, event.locationInWindow) }
+    override func mouseUp(with event: NSEvent) {
+        guard event.clickCount < 2 else { return }
+        NSCursor.pop(); onDrag?(.leftMouseUp, event.locationInWindow)
+    }
+    override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 

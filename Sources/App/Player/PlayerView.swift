@@ -57,6 +57,18 @@ final class PlayerView: NSView {
 
         controlBar.translatesAutoresizingMaskIntoConstraints = false
         addSubview(controlBar)
+        barCenterX = controlBar.centerXAnchor.constraint(equalTo: centerXAnchor)
+        barBottom = controlBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Self.barDefaultBottom)
+        controlBar.onDrag = { [weak self] phase, p in self?.dragBar(phase, p) }
+        controlBar.onResetPosition = { [weak self] in
+            Settings.shared.controlBarX = .nan; Settings.shared.controlBarY = .nan
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2; ctx.allowsImplicitAnimation = true
+                self?.applySavedBarPosition(); self?.layoutSubtreeIfNeeded()
+            }
+        }
+        centerGuide.backgroundColor = NSColor.white.withAlphaComponent(0.55).cgColor
+        centerGuide.isHidden = true
 
         subtitleBottom = subtitleLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -28)
         NSLayoutConstraint.activate([
@@ -70,8 +82,7 @@ final class PlayerView: NSView {
             osd.topAnchor.constraint(equalTo: topAnchor, constant: 40),
             osd.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
 
-            controlBar.centerXAnchor.constraint(equalTo: centerXAnchor),
-            controlBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -24),
+            barCenterX, barBottom,
             controlBar.heightAnchor.constraint(equalToConstant: ControlBar.preferredHeight),
             controlBar.widthAnchor.constraint(lessThanOrEqualToConstant: ControlBar.preferredWidth),
             controlBar.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -24),
@@ -90,12 +101,71 @@ final class PlayerView: NSView {
         addSubview(v, positioned: .below, relativeTo: subtitleLabel)
     }
 
+    // MARK: Draggable control bar (IINA-style), snapping to the horizontal centre with a guide line
+
+    private var barCenterX: NSLayoutConstraint!
+    private var barBottom: NSLayoutConstraint!
+    private static let barDefaultBottom: CGFloat = 24
+    private static let snapDistance: CGFloat = 10
+    private let centerGuide = CALayer()
+    private var dragStart: (mouse: NSPoint, x: CGFloat, bottom: CGFloat)?
+    private var snapped = true
+
+    private func dragBar(_ phase: NSEvent.EventType, _ windowPoint: NSPoint) {
+        let p = convert(windowPoint, from: nil)
+        if ProcessInfo.processInfo.environment["LP_DRAG_DEBUG"] != nil { NSLog("drag %@ p=%.0f,%.0f x=%.0f b=%.0f", String(describing: phase.rawValue), p.x, p.y, barCenterX.constant, barBottom.constant) }
+        switch phase {
+        case .leftMouseDown:
+            dragStart = (p, barCenterX.constant, -barBottom.constant)
+            snapped = abs(barCenterX.constant) < 0.5
+        case .leftMouseDragged:
+            guard let s = dragStart else { return }
+            delegate?.playerViewMouseActivity()                    // keep the controls up while dragging
+            var x = s.x + (p.x - s.mouse.x)
+            let bottom = s.bottom + (p.y - s.mouse.y)
+            let nowSnapped = abs(x) < Self.snapDistance
+            if nowSnapped { x = 0 }
+            if nowSnapped && !snapped { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now) }
+            snapped = nowSnapped
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            if centerGuide.superlayer == nil, let barLayer = controlBar.layer { layer?.insertSublayer(centerGuide, below: barLayer) }
+            centerGuide.isHidden = !nowSnapped
+            centerGuide.frame = CGRect(x: bounds.midX - 0.5, y: 0, width: 1, height: bounds.height)
+            CATransaction.commit()
+            placeBar(x: x, bottom: bottom)
+        default:
+            guard dragStart != nil else { return }
+            dragStart = nil
+            centerGuide.isHidden = true
+            // Remember as fractions so the bar keeps its place when the window resizes or goes full screen.
+            Settings.shared.controlBarX = bounds.width > 0 ? Double(barCenterX.constant / bounds.width) : .nan
+            Settings.shared.controlBarY = bounds.height > 0 ? Double(-barBottom.constant / bounds.height) : .nan
+        }
+    }
+
+    /// Clamp inside the view (and below the title bar) and apply.
+    private func placeBar(x: CGFloat, bottom: CGFloat) {
+        let w = controlBar.frame.width > 0 ? controlBar.frame.width : ControlBar.preferredWidth
+        let h = ControlBar.preferredHeight
+        let margin: CGFloat = 8, top: CGFloat = 34
+        let maxX = max(0, bounds.width / 2 - w / 2 - margin)
+        barCenterX.constant = min(max(x, -maxX), maxX)
+        barBottom.constant = -min(max(bottom, margin), max(margin, bounds.height - h - top))
+    }
+
+    private func applySavedBarPosition() {
+        guard dragStart == nil else { return }
+        let fx = Settings.shared.controlBarX, fy = Settings.shared.controlBarY
+        placeBar(x: fx.isNaN ? 0 : CGFloat(fx) * bounds.width, bottom: fy.isNaN ? Self.barDefaultBottom : CGFloat(fy) * bounds.height)
+    }
+
     /// Black strip kept above the picture (full screen below the camera housing).
     var videoTopInset: CGFloat = 0 { didSet { if videoTopInset != oldValue { needsLayout = true } } }
 
     override func layout() {
         super.layout()
         videoView?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - videoTopInset))
+        applySavedBarPosition()
         layoutSubtitleFont()
         layoutBitmaps()
     }

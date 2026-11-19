@@ -36,6 +36,11 @@ final class Settings: ObservableObject {
 
     /// Show HDR video (HDR10/HLG/Dolby Vision base layer) with extended dynamic range. Off: tone-mapped to SDR.
     @Published var hdrEnabled: Bool { didSet { d.set(hdrEnabled, forKey: "hdrEnabled") } }
+    /// Floating control bar position (IINA-style, draggable): bar centre's horizontal offset from the window centre
+    /// as a fraction of the width, and its bottom edge as a fraction of the height. NaN = default (centred, 24 pt up).
+    var controlBarX: Double { get { d.object(forKey: "controlBarX") as? Double ?? .nan } set { d.set(newValue, forKey: "controlBarX") } }
+    var controlBarY: Double { get { d.object(forKey: "controlBarY") as? Double ?? .nan } set { d.set(newValue, forKey: "controlBarY") } }
+
     /// Whether the video in the frontmost player is HDR (nil = nothing playing). Not persisted; greys out the
     /// HDR switch for SDR video.
     @Published var nowPlayingHDR: Bool?
