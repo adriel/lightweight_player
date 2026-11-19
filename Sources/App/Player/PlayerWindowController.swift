@@ -582,16 +582,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     // MARK: Title bar tags
 
-    /// The title is centred across the whole title bar and AppKit doesn't leave room for trailing accessories,
-    /// so shorten it (middle ellipsis) to the width that stays clear of the tags on both sides.
+    /// AppKit doesn't shorten the title to leave room for trailing accessories, so do it here (middle ellipsis):
+    /// the title gets everything between the proxy icon and the tags.
     private var fullTitle = ""
     private var tagsAccessory: NSTitlebarAccessoryViewController?
     private func fitTitle() {
         guard let window, !fullTitle.isEmpty else { return }
         // Size the accessory to its tags, then keep the centred title clear of it (and of the traffic lights).
         if let v = tagsAccessory?.view { let w = max(1, v.fittingSize.width); if abs(v.frame.width - w) > 1 { v.frame.size.width = w } }
-        let reserve = max(80, (tagsAccessory?.view.frame.width ?? 0) + 12)
-        let available = window.frame.width - 2 * reserve - 40                          // proxy icon + margins
+        // The title is leading-aligned (after the traffic lights and proxy icon) and runs up to the tags.
+        let leading = (window.standardWindowButton(.zoomButton)?.frame.maxX ?? 70) + 34     // buttons + proxy icon
+        let trailing = (tagsAccessory?.view.frame.width ?? 0) + 16
+        let available = window.frame.width - leading - trailing
         let font = NSFont.titleBarFont(ofSize: NSFont.systemFontSize)
         func width(_ s: String) -> CGFloat { (s as NSString).size(withAttributes: [.font: font]).width }
         var title = fullTitle
