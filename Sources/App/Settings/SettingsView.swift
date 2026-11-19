@@ -25,6 +25,7 @@ final class SettingsWindowController: NSWindowController {
         add("Subtitles", "captions.bubble", SubtitlesTab())
         add("Streaming", "network", StreamingTab())
         add("Formats", "film.stack", FormatsTab())
+        add("File Types", "doc.badge.gearshape", FileTypesTab())
         let w = NSWindow(contentViewController: tabs)
         w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
         w.toolbarStyle = .preference
