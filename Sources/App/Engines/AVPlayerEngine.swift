@@ -90,6 +90,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
                 self.subtitleAssetTracks[t.trackID] = t
             }
             self._subtitleTracks = subs
+            self.isHDRVideo = !((try? await asset.loadTracks(withMediaCharacteristic: .containsHDRVideo)) ?? []).isEmpty
             await self.buildMediaInfo(asset: asset, url: url)
             if let g = try? await asset.loadMediaSelectionGroup(for: .legible) { item.select(nil, in: g) }
             self.observers.append(item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -250,12 +251,30 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         }
     }
 
+    // Held-arrow scrubbing: chain keyframe-tolerant seeks so each one renders before the next (Apple QA1820).
+    private var scrubbing = false
+    private var pendingScrub: (Double, Bool)?
+    func scrub(to seconds: Double, forward: Bool) {
+        if scrubbing { pendingScrub = (seconds, forward); return }
+        scrubbing = true
+        let t = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
+        player.seek(to: t, toleranceBefore: forward ? .zero : .positiveInfinity, toleranceAfter: forward ? .positiveInfinity : .zero) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.scrubbing = false
+                if let (s, f) = self.pendingScrub { self.pendingScrub = nil; self.scrub(to: s, forward: f) }
+            }
+        }
+    }
+
     func close() {
         player.pause()
         player.replaceCurrentItem(with: nil)
         observers.removeAll()
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
     }
+
+    private(set) var isHDRVideo = false
 
     /// HDR off: render through a video composition whose output is BT.709 SDR (AVFoundation tone-maps).
     private var sdrComposition = false

@@ -2,19 +2,38 @@ import SwiftUI
 import VideoToolbox
 import AudioToolbox
 
-struct SettingsView: View {
-    @EnvironmentObject var settings: Settings
-    @State private var tab = CommandLine.arguments.contains("--settings") ? 4 : 0
-    var body: some View {
-        TabView(selection: $tab) {
-            GeneralTab().tag(0).tabItem { Label("Playback", systemImage: "play.rectangle") }
-            VideoTab().tag(1).tabItem { Label("Video", systemImage: "sun.max") }
-            SubtitlesTab().tag(2).tabItem { Label("Subtitles", systemImage: "captions.bubble") }
-            StreamingTab().tag(3).tabItem { Label("Streaming", systemImage: "network") }
-            FormatsTab().tag(4).tabItem { Label("Formats", systemImage: "film.stack") }
+import AppKit
+
+/// Standard macOS settings window: toolbar tabs (icon + label), window title = selected tab.
+final class SettingsWindowController: NSWindowController {
+    init() {
+        let tabs = NSTabViewController()
+        tabs.tabStyle = .toolbar
+        tabs.canPropagateSelectedChildViewControllerTitle = true
+        func add<V: View>(_ title: String, _ symbol: String, _ view: V) {
+            let host = NSHostingController(rootView: view.environmentObject(Settings.shared).frame(width: 620, height: 500))
+            host.title = title
+            host.sizingOptions = [.preferredContentSize]
+            host.preferredContentSize = NSSize(width: 620, height: 500)
+            let item = NSTabViewItem(viewController: host)
+            item.label = title
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+            tabs.addTabViewItem(item)
         }
-        .frame(width: 620, height: 520)
+        add("Playback", "play.rectangle", GeneralTab())
+        add("Video", "sun.max", VideoTab())
+        add("Subtitles", "captions.bubble", SubtitlesTab())
+        add("Streaming", "network", StreamingTab())
+        add("Formats", "film.stack", FormatsTab())
+        let w = NSWindow(contentViewController: tabs)
+        w.styleMask = [.titled, .closable]
+        w.toolbarStyle = .preference
+        w.isReleasedWhenClosed = false
+        super.init(window: w)
+        if CommandLine.arguments.contains("--settings") { tabs.selectedTabViewItemIndex = 4 }
+        w.center()
     }
+    required init?(coder: NSCoder) { fatalError() }
 }
 
 private struct GeneralTab: View {
@@ -63,9 +82,11 @@ private struct VideoTab: View {
             }
             Section {
                 Toggle("HDR (extended dynamic range)", isOn: $s.hdrEnabled)
+                    .disabled(s.nowPlayingHDR == false)
+                    .help(s.nowPlayingHDR == false ? "The current video is SDR" : "")
                 Toggle("Full screen covers the camera notch", isOn: $s.fullScreenCoversNotch)
             } footer: {
-                Text("HDR off tone-maps HDR10 / HLG video to SDR. Notch: full screen uses the whole display, including the strip beside the camera (the notch hides a small part of the picture); the menu bar and Dock appear when you move the pointer to them.")
+                Text((s.nowPlayingHDR == false ? "HDR is unavailable for the current video (it's SDR). " : "") + "HDR off tone-maps HDR10 / HLG video to SDR. Notch: full screen uses the whole display, including the strip beside the camera (the notch hides a small part of the picture); the menu bar and Dock appear when you move the pointer to them.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {

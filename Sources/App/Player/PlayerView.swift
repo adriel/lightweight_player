@@ -13,8 +13,7 @@ final class PlayerView: NSView {
     let controlBar = ControlBar()
     private let subtitleLabel = NSTextField(wrappingLabelWithString: "")
     private let placeholder = NSTextField(labelWithString: "Drop a video here\n⌘O open file  ·  ⇧⌘O open URL")
-    private let toast = NSTextField(labelWithString: "")
-    private let toastBox = NSView()
+    private let osd = OSDView()
     private var videoView: NSView?
     private var tracking: NSTrackingArea?
     private var toastTimer: Timer?
@@ -52,16 +51,9 @@ final class PlayerView: NSView {
         bitmapLayer.zPosition = 10
         layer?.addSublayer(bitmapLayer)
 
-        toastBox.wantsLayer = true
-        toastBox.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
-        toastBox.layer?.cornerRadius = 8
-        toastBox.translatesAutoresizingMaskIntoConstraints = false
-        toastBox.alphaValue = 0
-        toast.textColor = .white
-        toast.font = .systemFont(ofSize: 13, weight: .semibold)
-        toast.translatesAutoresizingMaskIntoConstraints = false
-        toastBox.addSubview(toast)
-        addSubview(toastBox)
+        osd.translatesAutoresizingMaskIntoConstraints = false
+        osd.alphaValue = 0
+        addSubview(osd)
 
         controlBar.translatesAutoresizingMaskIntoConstraints = false
         addSubview(controlBar)
@@ -75,12 +67,8 @@ final class PlayerView: NSView {
             subtitleLabel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.9),
             subtitleBottom,
 
-            toastBox.topAnchor.constraint(equalTo: topAnchor, constant: 40),
-            toastBox.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
-            toast.leadingAnchor.constraint(equalTo: toastBox.leadingAnchor, constant: 10),
-            toast.trailingAnchor.constraint(equalTo: toastBox.trailingAnchor, constant: -10),
-            toast.topAnchor.constraint(equalTo: toastBox.topAnchor, constant: 6),
-            toast.bottomAnchor.constraint(equalTo: toastBox.bottomAnchor, constant: -6),
+            osd.topAnchor.constraint(equalTo: topAnchor, constant: 40),
+            osd.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
 
             controlBar.centerXAnchor.constraint(equalTo: centerXAnchor),
             controlBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -24),
@@ -167,11 +155,21 @@ final class PlayerView: NSView {
     }
 
     func flash(_ message: String) {
-        toast.stringValue = message
-        toastBox.alphaValue = 1
+        osd.show(text: message)
+        presentOSD()
+    }
+
+    /// IINA-style OSD: large value, dimmer secondary text, thin progress bar (seek position, volume).
+    func flash(primary: String, secondary: String, progress: Double) {
+        osd.show(primary: primary, secondary: secondary, progress: progress)
+        presentOSD()
+    }
+
+    private func presentOSD() {
+        osd.alphaValue = 1
         toastTimer?.invalidate()
         toastTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: false) { [weak self] _ in
-            NSAnimationContext.runAnimationGroup { $0.duration = 0.3; self?.toastBox.animator().alphaValue = 0 }
+            NSAnimationContext.runAnimationGroup { $0.duration = 0.3; self?.osd.animator().alphaValue = 0 }
         }
     }
 
@@ -205,4 +203,76 @@ final class PlayerView: NSView {
 
 extension NSLayoutConstraint {
     func withPriority(_ p: NSLayoutConstraint.Priority) -> NSLayoutConstraint { priority = p; return self }
+}
+
+/// On-screen display in IINA's style: dark HUD material, rounded, hairline border; text plus optional bar.
+final class OSDView: NSVisualEffectView {
+    private let label = NSTextField(labelWithString: "")
+    private let track = CALayer(), fill = CALayer()
+    private let barHost = NSView()
+    private var barHeight: NSLayoutConstraint!
+    private var labelBottom: NSLayoutConstraint!
+    private var progress = 0.0
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        appearance = NSAppearance(named: .darkAqua)
+        wantsLayer = true
+        layer?.cornerRadius = 12
+        layer?.masksToBounds = true
+        layer?.borderWidth = 0.5
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.lineBreakMode = .byClipping
+        barHost.translatesAutoresizingMaskIntoConstraints = false
+        barHost.wantsLayer = true
+        track.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        fill.backgroundColor = NSColor.controlAccentColor.cgColor
+        track.cornerRadius = 2; fill.cornerRadius = 2
+        barHost.layer?.addSublayer(track); barHost.layer?.addSublayer(fill)
+        addSubview(label); addSubview(barHost)
+        barHeight = barHost.heightAnchor.constraint(equalToConstant: 4)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            barHost.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 6),
+            barHost.leadingAnchor.constraint(equalTo: label.leadingAnchor),
+            barHost.trailingAnchor.constraint(equalTo: label.trailingAnchor),
+            barHost.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            barHeight,
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show(text: String) {
+        label.attributedStringValue = NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 17, weight: .medium), .foregroundColor: NSColor.white])
+        barHost.isHidden = true
+        barHeight.constant = 0
+    }
+
+    func show(primary: String, secondary: String, progress: Double) {
+        let s = NSMutableAttributedString(string: primary, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 24, weight: .regular), .foregroundColor: NSColor.white])
+        if !secondary.isEmpty { s.append(NSAttributedString(string: " / " + secondary, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 20, weight: .regular), .foregroundColor: NSColor.white.withAlphaComponent(0.55)])) }
+        label.attributedStringValue = s
+        barHost.isHidden = false
+        barHeight.constant = 4
+        self.progress = min(max(progress, 0), 1)
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        let b = barHost.bounds
+        track.frame = b
+        fill.frame = CGRect(x: 0, y: 0, width: max(b.height, b.width * progress), height: b.height)
+        CATransaction.commit()
+    }
 }

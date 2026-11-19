@@ -86,6 +86,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             startCropDetection()
             setupSubtitles()
             engine.setHDR(settings.hdrEnabled)
+            settings.nowPlayingHDR = engine.isHDRVideo
             if let t = pendingResume, t < engine.duration - 10 {
                 engine.seek(to: t, accurate: false)
                 playerView.flash("Resumed at \(formatTime(t))")
@@ -344,8 +345,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         guard mods.isEmpty else { return false }
         let shift = e.modifierFlags.contains(.shift)
         switch e.keyCode {
-        case 123: skip(-(shift ? settings.longSeekStep : settings.seekStep)); return true   // ←
-        case 124: skip(shift ? settings.longSeekStep : settings.seekStep); return true      // →
+        case 123: skip(-(shift ? settings.longSeekStep : settings.seekStep), held: e.isARepeat); return true   // ←
+        case 124: skip(shift ? settings.longSeekStep : settings.seekStep, held: e.isARepeat); return true      // →
         case 126: changeVolume(settings.volumeStep / 100); return true                       // ↑
         case 125: changeVolume(-settings.volumeStep / 100); return true                      // ↓
         case 49: togglePlay(); return true                                                    // space
@@ -368,12 +369,29 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
     }
 
-    private func skip(_ s: Double) {
+    /// IINA-style OSD time: "05:18", "1:02:03".
+    private func osdTime(_ t: Double) -> String {
+        let s = Int(max(0, t.isFinite ? t : 0))
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%02d:%02d", s / 60, s % 60)
+    }
+
+    /// Target of the last skip; consecutive skips build on it (the engine's clock lags behind requests).
+    private var skipBase: Double?
+    private var skipBaseTimer: Timer?
+
+    func skip(_ s: Double, held: Bool = false) {
         guard let engine else { return }
-        let target = min(max(0, engine.currentTime + s), max(0, engine.duration - 0.5))
-        engine.seek(to: target, accurate: settings.accurateSeek)
-        playerView.flash("\(s > 0 ? "⏩" : "⏪") \(formatTime(target))")
-        showControls()
+        let now = engine.currentTime
+        // Forward keyframe seeks may land past the target: never step back behind where we already are.
+        let base = skipBase.map { s > 0 ? max($0, now) : $0 } ?? now
+        let target = min(max(0, base + s), max(0, engine.duration - 0.5))
+        skipBase = target
+        skipBaseTimer?.invalidate()
+        skipBaseTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in self?.skipBase = nil }
+        if held { engine.scrub(to: target, forward: s > 0) }
+        else { engine.seek(to: target, accurate: settings.accurateSeek) }
+        playerView.flash(primary: osdTime(target), secondary: osdTime(engine.duration),
+                         progress: engine.duration > 0 ? target / engine.duration : 0)
     }
 
     private func changeVolume(_ delta: Double) {
@@ -381,7 +399,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         settings.volume = min(max(settings.volume + delta, 0), 1)
         engine?.volume = Float(settings.volume)
         playerView.controlBar.setVolume(settings.volume, muted: false)
-        playerView.flash("🔊 \(Int((settings.volume * 100).rounded()))%")
+        playerView.flash(primary: "Volume: \(Int((settings.volume * 100).rounded()))", secondary: "", progress: settings.volume)
     }
 
     @objc func togglePlay() {
@@ -612,7 +630,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         } else if let u = urls.first { open(u) }
     }
 
+    func windowDidBecomeKey(_ notification: Notification) {
+        if let engine { settings.nowPlayingHDR = engine.isHDRVideo }
+    }
+
     func windowWillClose(_ notification: Notification) {
+        settings.nowPlayingHDR = nil
         if notchFullScreen != nil { NSApp.presentationOptions = []; notchFullScreen = nil }
         saveResumePosition()
         closeEngine()

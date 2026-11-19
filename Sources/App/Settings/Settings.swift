@@ -36,6 +36,9 @@ final class Settings: ObservableObject {
 
     /// Show HDR video (HDR10/HLG/Dolby Vision base layer) with extended dynamic range. Off: tone-mapped to SDR.
     @Published var hdrEnabled: Bool { didSet { d.set(hdrEnabled, forKey: "hdrEnabled") } }
+    /// Whether the video in the frontmost player is HDR (nil = nothing playing). Not persisted; greys out the
+    /// HDR switch for SDR video.
+    @Published var nowPlayingHDR: Bool?
     /// Full screen fills the whole display including the strip beside the camera notch (custom full screen
     /// instead of macOS's, which keeps that strip black). Only affects displays with a notch.
     @Published var fullScreenCoversNotch: Bool { didSet { d.set(fullScreenCoversNotch, forKey: "fullScreenCoversNotch") } }

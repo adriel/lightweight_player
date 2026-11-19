@@ -265,11 +265,14 @@ final class FFDemuxer {
         }
     }
 
-    func seek(to seconds: Double) {
+    /// Lands on the last keyframe at or before the target, or (`forward`) the first one at or after it, so
+    /// repeated forward keyframe seeks always advance.
+    func seek(to seconds: Double, forward: Bool = false) {
         guard let ctx else { return }
         let ts = Int64(seconds * Double(AV_TIME_BASE))
-        // Land on the last keyframe at or before the target.
-        avformat_seek_file(ctx, -1, Int64.min, ts, ts, 0)
+        if !forward || avformat_seek_file(ctx, -1, ts, ts, Int64.max, 0) < 0 {
+            avformat_seek_file(ctx, -1, Int64.min, ts, ts, 0)
+        }
         swVideo?.flush(); hwVideo?.flush(); swAudio?.flush(); swSubtitle?.flush()
     }
 

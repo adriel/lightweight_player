@@ -73,7 +73,7 @@ final class SampleBufferEngine: PlayerEngine {
             DispatchQueue.main.async { self?.lastMetrics = str }
             if log { DispatchQueue.main.async { guard let self else { return }; let pb = self.videoRenderer.displayedPixelBuffer()
                 let tf = pb.flatMap { CVBufferCopyAttachment($0, kCVImageBufferTransferFunctionKey, nil) as? String } ?? "-"
-                NSLog("metrics: %@ · lead %.2f s · frame %@ %@", str, self.lastVideoPTS - self.currentTime, pb.map { CVPixelBufferGetPixelFormatType($0).fourCCString } ?? "-", tf) } }
+                NSLog("metrics: %@ · lead %.2f s · audio lead %.2f s · frame %@ %@", str, self.lastVideoPTS - self.currentTime, self.lastAudioPTS - self.currentTime, pb.map { CVPixelBufferGetPixelFormatType($0).fourCCString } ?? "-", tf) } }
         }
     }
     private var metricsTimer: Timer?
@@ -135,6 +135,8 @@ final class SampleBufferEngine: PlayerEngine {
                 _subtitleTracks = d.subtitleStreams
                 demuxer = d
                 _duration = d.duration
+                let hdr = d.videoFormat.map(FFDemuxer.isHDR) ?? false
+                DispatchQueue.main.async { self.isHDRVideo = hdr }
                 let w = d.warnings.map(EngineWarning.init)
                 let n = d.notices
                 let fr = d.frameRateInfo
@@ -275,6 +277,8 @@ final class SampleBufferEngine: PlayerEngine {
         }
     }
 
+    private(set) var isHDRVideo = false
+
     func pause() {
         wantsPlay = false
         queue.async { [self] in
@@ -284,25 +288,85 @@ final class SampleBufferEngine: PlayerEngine {
     }
 
     func seek(to seconds: Double, accurate: Bool) {
+        pendingScrub = nil
+        scrubEnd?.cancel(); scrubEnd = nil
+        performSeek(seconds, accurate: accurate, forward: false, scrub: false)
+    }
+
+    // Held-arrow scrubbing (like mpv/IINA): keyframe seeks, each one shown before the next starts. Requests
+    // that arrive meanwhile collapse into the latest target. Main thread.
+    private var scrubInFlight: Int?            // generation of the seek being waited on
+    private var pendingScrub: (Double, Bool)?
+    private var seekGenerationRequested = 0
+    private static let seekDebug = ProcessInfo.processInfo.environment["LP_SEEK_DEBUG"] != nil
+    private var seekStarted = Date()
+
+    func scrub(to seconds: Double, forward: Bool) {
+        scrubEnd?.cancel(); scrubEnd = nil
+        if scrubInFlight != nil { pendingScrub = (seconds, forward); return }
+        let gen = performSeek(seconds, accurate: false, forward: forward, scrub: true)
+        scrubInFlight = gen
+        // Safety net (end of file, decode error): don't wait forever for a frame.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.seekShown(gen) }
+    }
+
+    /// First frame of seek `gen` was handed to the renderer.
+    private func seekShown(_ gen: Int) {
+        guard scrubInFlight == gen else { return }
+        if Self.seekDebug { NSLog("seek: frame after %.0f ms", Date().timeIntervalSince(seekStarted) * 1000) }
+        scrubInFlight = nil
+        if let (t, f) = pendingScrub { pendingScrub = nil; scrub(to: t, forward: f); return }
+        // No more jumps queued: resume normal playback from the frame on screen shortly after the key stops.
+        let end = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.scrubEnd = nil
+            self.queue.async {
+                guard self.scrubHold, gen == self.generation else { return }
+                self.scrubHold = false
+                self.synchronizer.setRate(self.wantsPlay ? self.playRate : 0, time: self.synchronizer.currentTime())
+                self.startFeeding()
+            }
+        }
+        scrubEnd = end
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: end)
+    }
+    private var scrubEnd: DispatchWorkItem?
+    /// Feed queue: while scrubbing, only the landed keyframe is decoded and shown; clock and audio stay paused,
+    /// so the next jump has almost nothing to flush.
+    private var scrubHold = false
+
+    @discardableResult
+    private func performSeek(_ seconds: Double, accurate: Bool, forward: Bool, scrub: Bool) -> Int {
         let target = max(0, min(seconds, _duration > 0 ? _duration - 0.5 : seconds))
+        seekGenerationRequested += 1
+        let gen = seekGenerationRequested
+        seekStarted = Date()
         queue.async { [self] in
             guard let demuxer else { return }
-            generation += 1
+            generation = gen
             let playing = wantsPlay
             synchronizer.setRate(0, time: CMTime(seconds: target, preferredTimescale: 90000))
             videoRenderer.flush()
             audioRenderer.flush()
             freePending()
             eof = false
-            demuxer.seek(to: target)
+            demuxer.seek(to: target, forward: forward && !accurate)
             seekTarget = accurate ? target : nil
             audioCutoff = accurate ? target : nil
             firstFrameSignaled = false
-            let rate = playing ? playRate : 0
-            synchronizer.setRate(rate, time: CMTime(seconds: target, preferredTimescale: 90000))
+            // Keyframe seek: start the clock at the keyframe actually landed on, so it shows immediately.
+            var start = target
+            if !accurate, hasVideo, let first = next(video: true) {
+                if first.presentationTimeStamp.isValid { start = first.presentationTimeStamp.seconds }
+                videoPending.insert(first, at: 0)
+            }
+            scrubHold = scrub
+            let rate = playing && !scrub ? playRate : 0
+            synchronizer.setRate(rate, time: CMTime(seconds: start, preferredTimescale: 90000))
             startFeeding()
         }
         displaySync?.resync()
+        return gen
     }
 
     func close() {
@@ -372,7 +436,9 @@ final class SampleBufferEngine: PlayerEngine {
             videoRenderer.enqueue(decoupled && timeScale != 1 ? scaledForVideoClock(sb) : sb)
             if !firstFrameSignaled && !hide {
                 firstFrameSignaled = true
+                DispatchQueue.main.async { self.seekShown(gen) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.onEvent?(.firstFrame) }
+                if scrubHold { videoRenderer.stopRequestingMediaData(); return }
             }
             resumeAudioIfThrottled(gen)
         }
@@ -453,6 +519,7 @@ final class SampleBufferEngine: PlayerEngine {
 
     private func feedAudio(_ gen: Int) {
         guard gen == generation else { return }
+        if scrubHold { audioRenderer.stopRequestingMediaData(); return }
         while audioRenderer.isReadyForMoreMediaData {
             if hasVideo && !eof && lastAudioPTS > lastVideoPTS + Self.audioLeadOverVideo {
                 audioThrottled = true

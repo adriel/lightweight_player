@@ -21,6 +21,9 @@ final class HWVideoDecoder {
     private var reorderDepth = 4
     private let lookahead = 4
     private var lastEmitted = CMTime.negativeInfinity
+    /// After a seek the first decoded frame is the keyframe the seek landed on: show it without waiting for the
+    /// reorder window (frames that would sort before it are undecodable leading pictures anyway).
+    private var emitFirstImmediately = true
     private var formats: [OSType: CMVideoFormatDescription] = [:]
     private(set) var failures = 0
 
@@ -55,7 +58,7 @@ final class HWVideoDecoder {
     func flush() {
         if let session { VTDecompressionSessionWaitForAsynchronousFrames(session) }
         cond.lock()
-        ready.removeAll(); inFlight = 0; lastEmitted = .negativeInfinity
+        ready.removeAll(); inFlight = 0; lastEmitted = .negativeInfinity; emitFirstImmediately = true
         cond.unlock()
     }
 
@@ -66,7 +69,9 @@ final class HWVideoDecoder {
         var inputDry = false
         while true {
             cond.lock()
-            let want = inFlight + ready.count < reorderDepth + lookahead
+            let firstReady = emitFirstImmediately && !ready.isEmpty
+            // Right after a seek, decode just the keyframe and show it; then fill the pipeline.
+            let want = !firstReady && inFlight + ready.count < (emitFirstImmediately ? 1 : reorderDepth + lookahead)
             cond.unlock()
             if want && !inputDry {
                 if let sb = pull() { submit(sb, session); continue }
@@ -74,7 +79,8 @@ final class HWVideoDecoder {
             }
             cond.lock()
             let ended = inputDry && atEnd()
-            if ready.count > reorderDepth || (ended && inFlight == 0 && !ready.isEmpty) {
+            if firstReady || ready.count > reorderDepth || (ended && inFlight == 0 && !ready.isEmpty) {
+                emitFirstImmediately = false
                 let f = ready.removeFirst()
                 cond.unlock()
                 if f.presentationTimeStamp < lastEmitted {

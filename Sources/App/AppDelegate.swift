@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var players: [PlayerWindowController] = []
-    private var settingsWindow: NSWindow?
+    private var settingsWindow: SettingsWindowController?
     private lazy var inspector: InspectorController = {
         let c = InspectorController()
         c.currentPlayer = { [weak self] in
@@ -79,16 +79,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showSettings(_ sender: Any?) {
-        if settingsWindow == nil {
-            let host = NSHostingController(rootView: SettingsView().environmentObject(Settings.shared))
-            let w = NSWindow(contentViewController: host)
-            w.title = "LightPlayer Settings"
-            w.styleMask = [.titled, .closable]
-            w.isReleasedWhenClosed = false
-            w.center()
-            settingsWindow = w
-        }
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        if settingsWindow == nil { settingsWindow = SettingsWindowController() }
+        settingsWindow?.showWindow(nil)
         NSApp.activate()
     }
 
@@ -157,11 +149,13 @@ struct VideoAdjustView: View {
             Toggle(isOn: $settings.hdrEnabled) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("HDR")
-                    Text(settings.hdrEnabled ? "HDR video uses the display's extra brightness" : "HDR video is tone-mapped to SDR")
+                    Text(settings.nowPlayingHDR == false ? "This video is SDR" :
+                         settings.hdrEnabled ? "HDR video uses the display's extra brightness" : "HDR video is tone-mapped to SDR")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
             .toggleStyle(.switch)
+            .disabled(settings.nowPlayingHDR == false)
             Divider()
             slider("Brightness", value: $settings.brightness, range: -0.5...0.5, format: { String(format: "%+.2f", $0) })
             slider("Contrast", value: $settings.contrast, range: 0.5...1.5, format: { String(format: "%.2f", $0) })
