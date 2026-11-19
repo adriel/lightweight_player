@@ -62,8 +62,23 @@ final class SampleBufferEngine: PlayerEngine {
         completion(videoRenderer.displayedPixelBuffer())
     }
 
+    /// Renderer's own counters (frames shown, dropped for missing their deadline, accumulated lateness).
+    private var lastMetrics = "—"
+    private func refreshMetrics(log: Bool = false) {
+        videoRenderer.loadVideoPerformanceMetrics { [weak self] m in
+            guard let m else { return }
+            let avgDelay = m.totalNumberOfFrames > 0 ? m.totalAccumulatedFrameDelay / Double(m.totalNumberOfFrames) * 1000 : 0
+            let str = String(format: "%d frames · %d dropped · %d corrupted · avg delay %.1f ms · optimized %d",
+                             m.totalNumberOfFrames, m.numberOfDroppedFrames, m.numberOfCorruptedFrames, avgDelay, m.numberOfFramesDisplayedUsingOptimizedCompositing)
+            DispatchQueue.main.async { self?.lastMetrics = str }
+            if log { DispatchQueue.main.async { guard let self else { return }; NSLog("metrics: %@ · lead %.2f s", str, self.lastVideoPTS - self.currentTime) } }
+        }
+    }
+    private var metricsTimer: Timer?
+
     func statusRows() -> [MediaInfo.Row] {
-        var rows: [MediaInfo.Row] = [("Display sync", displaySync?.summary ?? "off"), ("A/V read-ahead", String(format: "video %.1f s · audio %.1f s", max(0, lastVideoPTS - currentTime), max(0, lastAudioPTS - currentTime)))]
+        refreshMetrics()
+        var rows: [MediaInfo.Row] = [("Display sync", displaySync?.summary ?? "off"), ("Renderer", lastMetrics), ("A/V read-ahead", String(format: "video %.1f s · audio %.1f s", max(0, lastVideoPTS - currentTime), max(0, lastAudioPTS - currentTime)))]
         if let s = source?.stats {
             let bps = s.length > 0 && _duration > 0 ? Double(s.length) / _duration : 0
             rows.append(("Buffered ahead", InfoFormat.bytes(s.aheadBytes) + (bps > 0 ? String(format: " (%.0f s)", Double(s.aheadBytes) / bps) : "")))
@@ -139,6 +154,9 @@ final class SampleBufferEngine: PlayerEngine {
                         self.synchronizer.addRenderer(self.displayLayer)
                     }
                     self.onEvent?(.ready)
+                    if ProcessInfo.processInfo.environment["LP_VIDEO_METRICS"] != nil {
+                        self.metricsTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshMetrics(log: true) }
+                    }
                     self.queue.async { if d.videoIndex >= 0 || d.audioIndex >= 0 { self.startFeeding() } }
                 }
                 if d.videoIndex < 0 && d.audioIndex < 0 {
@@ -229,11 +247,11 @@ final class SampleBufferEngine: PlayerEngine {
     /// Content timestamps → video-clock timestamps (decoupled mode with s ≠ 1).
     private func scaledForVideoClock(_ sb: CMSampleBuffer) -> CMSampleBuffer {
         let s = timeScale
-        let pts = sb.presentationTimeStamp, dur = sb.duration
+        let pts = sb.presentationTimeStamp, dts = sb.decodeTimeStamp, dur = sb.duration
         var timing = CMSampleTimingInfo(
             duration: dur.isValid ? CMTime(seconds: dur.seconds / s, preferredTimescale: 1_000_000_000) : .invalid,
             presentationTimeStamp: CMTime(seconds: pts.seconds / s, preferredTimescale: 1_000_000_000),
-            decodeTimeStamp: .invalid)
+            decodeTimeStamp: dts.isValid ? CMTime(seconds: dts.seconds / s, preferredTimescale: 1_000_000_000) : .invalid)
         var out: CMSampleBuffer?
         CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: sb, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &out)
         guard let out else { return sb }
@@ -277,6 +295,7 @@ final class SampleBufferEngine: PlayerEngine {
     }
 
     func close() {
+        metricsTimer?.invalidate()
         displaySync?.stop()
         demuxer?.interrupt()
         source?.close()
@@ -452,6 +471,7 @@ final class SampleBufferEngine: PlayerEngine {
     private var videoDrained = false, audioDrained = false
 
     private func nextVideo() -> CMSampleBuffer? {
+        if let hw = demuxer?.hwVideo { return hw.nextFrame(pull: { next(video: true) }, atEnd: { eof }) }
         guard let sw = demuxer?.swVideo else { return next(video: true) }
         while decodedVideo.isEmpty {
             if let sb = next(video: true) { decodedVideo = sw.decode(sb) }

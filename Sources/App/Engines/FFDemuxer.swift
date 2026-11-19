@@ -18,6 +18,8 @@ final class FFDemuxer {
     /// Software fallbacks (only created when macOS can't decode the stream itself).
     private(set) var swVideo: SWVideoDecoder?
     private(set) var swAudio: SWAudioDecoder?
+    /// In-app VideoToolbox decoding for hardware formats (see HWVideoDecoder).
+    private(set) var hwVideo: HWVideoDecoder?
     private var swSubtitle: SWSubtitleDecoder?
     /// Informational messages (e.g. "AV1 decoded in software") — not problems.
     private(set) var notices: [String] = []
@@ -87,6 +89,9 @@ final class FFDemuxer {
             c.pointee.streams[Int(i)]!.pointee.discard = AVDISCARD_ALL
         }
         if videoIndex >= 0 { buildVideoFormat() }
+        if videoIndex >= 0, swVideo == nil, let fd = videoFormat, ProcessInfo.processInfo.environment["LP_LAYER_DECODE"] == nil {
+            hwVideo = HWVideoDecoder(format: fd)     // nil (→ the layer decodes) if VideoToolbox can't do it in hardware
+        }
         if audioIndex >= 0 { buildAudioFormat() }
         collectSubtitleStreams()
     }
@@ -152,7 +157,7 @@ final class FFDemuxer {
             let fr = av_q2d(st.avg_frame_rate) > 0 ? av_q2d(st.avg_frame_rate) : av_q2d(st.r_frame_rate)
             var decoder: String
             if let sw = swVideo { decoder = "\(sw.decoderName) (software, \(sw.threads) threads)" }
-            else if let fd = videoFormat { decoder = InfoFormat.videoDecoder(for: fd) } else { decoder = "—" }
+            else if let fd = videoFormat { decoder = InfoFormat.videoDecoder(for: fd) + (hwVideo != nil ? " · in-app session" : " · inside the display layer") } else { decoder = "—" }
             var dovi = false
             for i in 0..<Int(p.nb_coded_side_data) where p.coded_side_data[i].type == AV_PKT_DATA_DOVI_CONF { dovi = true }
             let fdExt = videoFormat.flatMap { CMFormatDescriptionGetExtensions($0) as? [String: Any] }
@@ -170,7 +175,7 @@ final class FFDemuxer {
             }
             m.video = [("Format", videoCodecName), ("Codec", long(p.codec_id)),
                        ("Profile", profile),
-                       ("Decoder", decoder), ("Renderer", swVideo == nil ? "AVSampleBufferDisplayLayer (compressed → VideoToolbox)" : "AVSampleBufferDisplayLayer (IOSurface frames)"),
+                       ("Decoder", decoder), ("Renderer", swVideo == nil && hwVideo == nil ? "AVSampleBufferDisplayLayer (compressed → VideoToolbox)" : "AVSampleBufferDisplayLayer (decoded IOSurface frames)"),
                        ("Pixel format", pixfmt),
                        ("Size", "\(p.width)×\(p.height)" + (p.sample_aspect_ratio.num > 0 && p.sample_aspect_ratio.num != p.sample_aspect_ratio.den ? " (SAR \(p.sample_aspect_ratio.num):\(p.sample_aspect_ratio.den))" : "")),
                        ("Primaries", color(p.color_primaries != AVCOL_PRI_UNSPECIFIED ? str(av_color_primaries_name(p.color_primaries)) : nil, kCVImageBufferColorPrimariesKey)),
@@ -265,7 +270,7 @@ final class FFDemuxer {
         let ts = Int64(seconds * Double(AV_TIME_BASE))
         // Land on the last keyframe at or before the target.
         avformat_seek_file(ctx, -1, Int64.min, ts, ts, 0)
-        swVideo?.flush(); swAudio?.flush(); swSubtitle?.flush()
+        swVideo?.flush(); hwVideo?.flush(); swAudio?.flush(); swSubtitle?.flush()
     }
 
     private func softwareVideo(_ notice: String) {
@@ -476,7 +481,7 @@ final class FFDemuxer {
             // so decode order stays monotonic for B-frame streams.
             pts = grid.snap(pts)
             // Without stream probing, coarse-clock containers (Matroska) don't give real decode timestamps for
-            // B-frame streams (dts == pts, out of order). The display layer decodes in enqueue order anyway.
+            // B-frame streams (dts == pts, out of order). Decoding happens in enqueue order anyway.
             dts = .invalid
             dur = CMTime(value: grid.den, timescale: CMTimeScale(clamping: grid.num))
         }
