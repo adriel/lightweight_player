@@ -82,17 +82,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openURLPrompt(_ sender: Any?) {
-        let a = NSAlert()
-        a.messageText = "Open URL"
-        a.informativeText = "Direct link to an .mp4 / .mkv / .webm file (http or https). Credentials in the URL are sent as Basic auth."
-        let f = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
-        f.placeholderString = "https://example.com/video.mkv"
-        if let s = NSPasteboard.general.string(forType: .string), s.hasPrefix("http") { f.stringValue = s }
-        a.accessoryView = f
-        a.addButton(withTitle: "Open"); a.addButton(withTitle: "Cancel")
-        a.window.initialFirstResponder = f
-        if a.runModal() == .alertFirstButtonReturn, let u = URL(string: f.stringValue.trimmingCharacters(in: .whitespaces)), u.scheme?.hasPrefix("http") == true {
-            openURLs([u])
+        let target = targetPlayer()
+        if target.window?.isVisible != true { target.showWindow(nil) }
+        OpenLocationSheet.present(on: target.window) { [weak self, weak target] url in
+            if WebLink.handles(url) { self?.openURLs([url]) } else { target?.open(url) }
         }
     }
 
@@ -138,6 +131,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         file.addItem(.separator())
         file.addItem(item("Close", #selector(NSWindow.performClose(_:)), "w"))
         main.addItem(withTitle: "File", action: nil, keyEquivalent: "").submenu = file
+
+        // Standard Edit menu: without it ⌘V / ⌘C / ⌘A / ⌘Z don't work in any text field (e.g. Open Location).
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(item("Undo", Selector(("undo:")), "z"))
+        edit.addItem(item("Redo", Selector(("redo:")), "z", [.command, .shift]))
+        edit.addItem(.separator())
+        edit.addItem(item("Cut", #selector(NSText.cut(_:)), "x"))
+        edit.addItem(item("Copy", #selector(NSText.copy(_:)), "c"))
+        edit.addItem(item("Paste", #selector(NSText.paste(_:)), "v"))
+        edit.addItem(item("Delete", #selector(NSText.delete(_:)), ""))
+        edit.addItem(item("Select All", #selector(NSText.selectAll(_:)), "a"))
+        main.addItem(withTitle: "Edit", action: nil, keyEquivalent: "").submenu = edit
 
         let view = NSMenu(title: "View")
         view.addItem(item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
