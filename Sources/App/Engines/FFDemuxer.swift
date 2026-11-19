@@ -67,20 +67,28 @@ final class FFDemuxer {
             ioContext?.pointee.seekable = AVIO_SEEKABLE_NORMAL
             c?.pointee.pb = ioContext
             c?.pointee.flags |= AVFMT_FLAG_CUSTOM_IO
+        } else if !url.contains("://"), let f = FragmentedMP4(path: url) {
+            // Unindexed fragmented MP4: don't let libavformat walk every fragment at open (see FragmentedMP4).
+            fragmented = f
+            c?.pointee.flags |= AVFMT_FLAG_IGNIDX
         } else {
             av_dict_set(&opts, "reconnect", "1", 0)
             av_dict_set(&opts, "reconnect_streamed", "1", 0)
             av_dict_set(&opts, "reconnect_delay_max", "10", 0)
         }
+        let tOpen = Date()
         let r = avformat_open_input(&c, source == nil ? url : nil, nil, &opts)
         av_dict_free(&opts)
+        if ProcessInfo.processInfo.environment["LP_OPEN_DEBUG"] != nil { NSLog("open: avformat_open_input %.0f ms", Date().timeIntervalSince(tOpen) * 1000) }
         guard r >= 0, let c else { throw FFError.open(r) }
         ctx = c
         // MP4/MKV headers carry full codec parameters; only probe packets when they don't.
         if needsProbe(c) {
+            let t = Date()
             c.pointee.probesize = 2_000_000
             c.pointee.max_analyze_duration = 2 * Int64(AV_TIME_BASE)
             avformat_find_stream_info(c, nil)
+            if ProcessInfo.processInfo.environment["LP_OPEN_DEBUG"] != nil { NSLog("open: find_stream_info %.0f ms", Date().timeIntervalSince(t) * 1000) }
         }
         videoIndex = av_find_best_stream(c, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0)
         audioIndex = av_find_best_stream(c, AVMEDIA_TYPE_AUDIO, -1, videoIndex, nil, 0)
@@ -226,6 +234,8 @@ final class FFDemuxer {
 
     deinit {
         if ctx != nil { avformat_close_input(&ctx) }
+        if spliceIO != nil { av_freep(&spliceIO!.pointee.buffer); avio_context_free(&spliceIO) }
+        spliceBox?.release()
         if ioContext != nil {
             av_freep(&ioContext!.pointee.buffer)
             avio_context_free(&ioContext)
@@ -236,7 +246,50 @@ final class FFDemuxer {
 
     func interrupt() { interruptFlag.pointee = 1 }
 
+    // MARK: Unindexed fragmented MP4
+
+    private(set) var fragmented: FragmentedMP4?
+    private var spliceIO: UnsafeMutablePointer<AVIOContext>?
+    private var spliceBox: Unmanaged<SpliceBox>?
+
+    /// Re-opens the demuxer on header + the fragment at `offset` onward (timestamps stay absolute via tfdt).
+    private func reopenSpliced(at offset: Int64) -> Bool {
+        guard let f = fragmented else { return false }
+        let box = Unmanaged.passRetained(SpliceBox(f, offset: offset))
+        let bufSize: Int32 = 256 * 1024
+        let buf = av_malloc(Int(bufSize))!.assumingMemoryBound(to: UInt8.self)
+        var io = avio_alloc_context(buf, bufSize, 0, box.toOpaque(), { opaque, buf, size in
+            let b = Unmanaged<SpliceBox>.fromOpaque(opaque!).takeUnretainedValue()
+            let n = b.read(buf!, Int(size))
+            return n > 0 ? Int32(n) : (n == 0 ? lp_averror_eof() : -5)
+        }, nil, { opaque, offset, whence in
+            let b = Unmanaged<SpliceBox>.fromOpaque(opaque!).takeUnretainedValue()
+            return b.seek(offset, whence)
+        })
+        io?.pointee.seekable = AVIO_SEEKABLE_NORMAL
+        var c: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
+        c?.pointee.pb = io
+        c?.pointee.flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_IGNIDX
+        c?.pointee.interrupt_callback.callback = { opaque in opaque!.assumingMemoryBound(to: Int32.self).pointee }
+        c?.pointee.interrupt_callback.opaque = UnsafeMutableRawPointer(interruptFlag)
+        guard avformat_open_input(&c, nil, nil, nil) >= 0, let c, c.pointee.nb_streams == ctx?.pointee.nb_streams else {
+            if io != nil { av_freep(&io!.pointee.buffer); avio_context_free(&io) }
+            box.release()
+            return false
+        }
+        // Same streams; carry over which ones we demux.
+        if let old = ctx {
+            for i in 0..<Int(c.pointee.nb_streams) { c.pointee.streams[i]!.pointee.discard = old.pointee.streams[i]!.pointee.discard }
+        }
+        if ctx != nil { avformat_close_input(&ctx) }
+        if spliceIO != nil { av_freep(&spliceIO!.pointee.buffer); avio_context_free(&spliceIO) }
+        spliceBox?.release()
+        ctx = c; spliceIO = io; spliceBox = box
+        return true
+    }
+
     var duration: Double {
+        if let f = fragmented, f.duration > 0 { return f.duration }
         guard let ctx else { return 0 }
         if ctx.pointee.duration > 0 { return Double(ctx.pointee.duration) / Double(AV_TIME_BASE) }
         // Without avformat_find_stream_info the container duration may be unset; fall back to streams.
@@ -270,9 +323,13 @@ final class FFDemuxer {
     func seek(to seconds: Double, forward: Bool = false) {
         guard let ctx else { return }
         let ts = Int64(seconds * Double(AV_TIME_BASE))
-        if !forward || avformat_seek_file(ctx, -1, ts, ts, Int64.max, 0) < 0 {
+        let tSeek = Date()
+        if let f = fragmented, reopenSpliced(at: f.keyframeFragment(for: seconds, forward: forward)) {
+            // done: positioned at the keyframe fragment
+        } else if !forward || avformat_seek_file(ctx, -1, ts, ts, Int64.max, 0) < 0 {
             avformat_seek_file(ctx, -1, Int64.min, ts, ts, 0)
         }
+        if ProcessInfo.processInfo.environment["LP_OPEN_DEBUG"] != nil { NSLog("open: seek to %.0f s took %.0f ms", seconds, Date().timeIntervalSince(tSeek) * 1000) }
         swVideo?.flush(); hwVideo?.flush(); swAudio?.flush(); swSubtitle?.flush()
     }
 
@@ -677,6 +734,37 @@ final class FFDemuxer {
         var out = Data([0, 0, 0, 0]) // version + flags
         out.append(desc(0x03, es))
         return out
+    }
+}
+
+/// Virtual file for a spliced fragmented MP4: file[0..<headerEnd] followed by file[fragment...].
+final class SpliceBox {
+    let f: FragmentedMP4
+    let offset: Int64
+    var position: Int64 = 0
+    var length: Int64 { f.headerEnd + (f.length - offset) }
+    init(_ f: FragmentedMP4, offset: Int64) { self.f = f; self.offset = offset }
+    func read(_ buf: UnsafeMutablePointer<UInt8>, _ size: Int) -> Int {
+        guard position < length else { return 0 }
+        var done = 0
+        while done < size, position < length {
+            let (fileOff, avail) = position < f.headerEnd ? (position, f.headerEnd - position)
+                                                          : (offset + position - f.headerEnd, length - position)
+            let n = Darwin.pread(f.fd, buf + done, min(size - done, Int(avail)), fileOff)
+            if n <= 0 { return done > 0 ? done : (n == 0 ? 0 : -1) }
+            done += n; position += Int64(n)
+        }
+        return done
+    }
+    func seek(_ off: Int64, _ whence: Int32) -> Int64 {
+        switch whence & ~AVSEEK_FORCE {
+        case AVSEEK_SIZE: return length
+        case SEEK_SET: position = off
+        case SEEK_CUR: position += off
+        case SEEK_END: position = length + off
+        default: return -1
+        }
+        return position
     }
 }
 

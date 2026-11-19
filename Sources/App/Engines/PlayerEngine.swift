@@ -99,7 +99,12 @@ enum EngineEvent {
 /// (so streams get the disk-backed buffer).
 func makeEngine(for url: URL) -> PlayerEngine {
     let native: Set<String> = ["mp4", "m4v", "mov", "qt", "3gp"]
-    if url.isFileURL && native.contains(url.pathExtension.lowercased()) { return AVPlayerEngine(useMediaExtensions: false) }
+    if url.isFileURL && native.contains(url.pathExtension.lowercased()) {
+        // Unindexed fragmented MP4 (e.g. Twitch VOD downloads): AVFoundation scans every fragment before playing
+        // (~20 s for a 3.8 h VOD); the FFmpeg engine opens it instantly (see FragmentedMP4).
+        if FragmentedMP4.isUnindexedFragmented(url.path) { return SampleBufferEngine() }
+        return AVPlayerEngine(useMediaExtensions: false)
+    }
     if url.isFileURL && Settings.shared.useMediaExtensions { return AVPlayerEngine(useMediaExtensions: true) }
     return SampleBufferEngine()
 }

@@ -23,6 +23,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var lastResumeSave = Date()
     private var pendingResume: Double?
     var onClose: ((PlayerWindowController) -> Void)?
+    private var openStarted = Date()
+    private static let openDebug = ProcessInfo.processInfo.environment["LP_OPEN_DEBUG"] != nil
 
     init() {
         let window = PlayerWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
@@ -63,7 +65,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         window?.representedURL = url.isFileURL ? url : nil
         if url.isFileURL { NSDocumentController.shared.noteNewRecentDocumentURL(url) }
 
-        let e = forceSampleBufferEngine ? SampleBufferEngine() : makeEngine(for: url)
+        openStarted = Date()
+        let e = forceSampleBufferEngine || ProcessInfo.processInfo.environment["LP_FORCE_C"] != nil ? SampleBufferEngine() : makeEngine(for: url)
         engine = e
         e.volume = Float(muted ? 0 : settings.volume)
         playerView.setVideoView(e.view)
@@ -81,6 +84,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         guard let engine else { return }
         switch ev {
         case .ready:
+            if Self.openDebug { NSLog("open: ready after %.0f ms (%@)", Date().timeIntervalSince(openStarted) * 1000, String(describing: type(of: engine))) }
             (engine.view as? LayerHostView)?.videoSize = engine.naturalSize
             sizeWindowToVideo()
             startCropDetection()
@@ -100,7 +104,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             }
             if !engine.warnings.isEmpty { showWarnings(engine.warnings) }
             setupPiP()
-        case .firstFrame: break
+        case .firstFrame:
+            if Self.openDebug { NSLog("open: first frame after %.0f ms", Date().timeIntervalSince(openStarted) * 1000) }
         case .failed(let msg):
             let a = NSAlert()
             a.messageText = "Can't play this file"
