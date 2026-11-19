@@ -42,6 +42,9 @@ final class Settings: ObservableObject {
     /// Full screen fills the whole display including the strip beside the camera notch (custom full screen
     /// instead of macOS's, which keeps that strip black). Only affects displays with a notch.
     @Published var fullScreenCoversNotch: Bool { didSet { d.set(fullScreenCoversNotch, forKey: "fullScreenCoversNotch") } }
+    /// Use macOS's own full screen (separate Space, system animation that freezes the picture briefly)
+    /// instead of the live borderless full screen.
+    @Published var nativeFullScreen: Bool { didSet { d.set(nativeFullScreen, forKey: "nativeFullScreen") } }
 
     /// Detect letterbox / pillarbox bars and crop them away.
     @Published var autoCrop: Bool { didSet { d.set(autoCrop, forKey: "autoCrop") } }
@@ -67,7 +70,7 @@ final class Settings: ObservableObject {
         d.register(defaults: [
             "seekStep": 5.0, "longSeekStep": 30.0, "volumeStep": 5.0, "accurateSeek": true, "resumePlayback": true,
             "volume": 1.0, "controlsHideDelay": 2.0,
-            "autoCrop": true, "hdrEnabled": true, "fullScreenCoversNotch": false, "brightness": 0.0, "gamma": 1.0, "contrast": 1.0,
+            "autoCrop": true, "hdrEnabled": true, "fullScreenCoversNotch": false, "nativeFullScreen": false, "brightness": 0.0, "gamma": 1.0, "contrast": 1.0,
             "subtitleMode": SubtitleMode.forcedOnly.rawValue, "subtitleFontSize": 1.0, "loadSidecarSubtitles": true, "dtsCoreOnly": false, "useMediaExtensions": false,
             "bufferMinutes": 10.0, "maxCacheGB": 8.0, "networkTimeout": 30.0,
         ])
@@ -81,6 +84,7 @@ final class Settings: ObservableObject {
         autoCrop = d.bool(forKey: "autoCrop")
         hdrEnabled = d.bool(forKey: "hdrEnabled")
         fullScreenCoversNotch = d.bool(forKey: "fullScreenCoversNotch")
+        nativeFullScreen = d.bool(forKey: "nativeFullScreen")
         brightness = d.double(forKey: "brightness")
         gamma = d.double(forKey: "gamma")
         contrast = d.double(forKey: "contrast")

@@ -88,8 +88,10 @@ private struct VideoTab: View {
                     .disabled(s.nowPlayingHDR == false)
                     .help(s.nowPlayingHDR == false ? "The current video is SDR" : "")
                 Toggle("Full screen covers the camera notch", isOn: $s.fullScreenCoversNotch)
+                    .disabled(s.nativeFullScreen)
+                Toggle("Use macOS full screen (separate Space)", isOn: $s.nativeFullScreen)
             } footer: {
-                Text((s.nowPlayingHDR == false ? "HDR is unavailable for the current video (it's SDR). " : "") + "HDR off tone-maps HDR10 / HLG video to SDR. Notch: full screen uses the whole display, including the strip beside the camera (the notch hides a small part of the picture); the menu bar and Dock appear when you move the pointer to them.")
+                Text((s.nowPlayingHDR == false ? "HDR is unavailable for the current video (it's SDR). " : "") + "HDR off tone-maps HDR10 / HLG video to SDR. Notch: full screen uses the whole display, including the strip beside the camera (the notch hides a small part of the picture); the menu bar and Dock appear when you move the pointer to them. Full screen normally stays on this desktop so the video keeps playing while it animates; macOS full screen moves it to its own Space, and the picture freezes for about half a second during that transition.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {

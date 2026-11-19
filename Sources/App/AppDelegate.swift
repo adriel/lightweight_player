@@ -237,7 +237,7 @@ struct WebLink {
 
     static func handles(_ u: URL) -> Bool {
         guard let s = u.scheme?.lowercased() else { return false }
-        return s == "lightplayer" || s == "lightbench"
+        return s == "lightplayer"
     }
 
     init?(_ link: URL) {

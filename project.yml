@@ -51,8 +51,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lwplayer.LightPlayer.bench
         PRODUCT_NAME: LightBench
-        LP_URL_SCHEME: lightbench
-        INFOPLIST_FILE: Sources/App/Info.plist
+        # Own Info.plist without document types / URL scheme: the bench build must not show up in Finder's
+        # "Open With" or compete for lightplayer:// links.
+        INFOPLIST_FILE: Sources/Bench/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/App/LightPlayer.entitlements
         ENABLE_HARDENED_RUNTIME: NO
         HEADER_SEARCH_PATHS: /opt/homebrew/include

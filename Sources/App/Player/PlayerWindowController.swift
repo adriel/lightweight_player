@@ -716,45 +716,60 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func playerViewDoubleClicked() { toggleFullScreen() }
 
     // MARK: Full screen
-    // macOS's full screen keeps the strip beside the camera notch black (the window sits below it). With
-    // "Full screen covers the camera notch" we instead make the window borderless and exactly screen-sized,
-    // with the menu bar and Dock auto-hidden (what IINA calls legacy full screen).
+    // Default ("live") full screen: the window becomes borderless and animates to fill the screen on the current
+    // desktop, menu bar and Dock auto-hidden (IINA's "legacy" full screen). macOS's own full screen moves the
+    // window to a new Space, and during that transition the system shows a frozen snapshot (~0.5 s, measured
+    // with an on-screen timer) — here the real window animates, so the video keeps playing throughout.
+    // "Full screen covers the camera notch" decides whether the picture extends beside the camera housing.
 
-    private var notchFullScreen: (frame: NSRect, style: NSWindow.StyleMask, aspect: NSSize)?
-    var isFullScreen: Bool { notchFullScreen != nil || window?.styleMask.contains(.fullScreen) == true }
+    private var liveFullScreen: (frame: NSRect, style: NSWindow.StyleMask, aspect: NSSize)?
+    private var fullScreenAnimating = false
+    var isFullScreen: Bool { liveFullScreen != nil || window?.styleMask.contains(.fullScreen) == true }
 
     func toggleFullScreen() {
-        guard let window = window as? PlayerWindow else { return }
-        if let saved = notchFullScreen { exitNotchFullScreen(saved); return }
-        if window.styleMask.contains(.fullScreen) { window.nativeToggleFullScreen(); return }
-        if settings.fullScreenCoversNotch, let screen = window.screen ?? NSScreen.main, screen.safeAreaInsets.top > 0 {
-            enterNotchFullScreen(screen)
-        } else {
-            window.nativeToggleFullScreen()
-        }
+        guard let window = window as? PlayerWindow, !fullScreenAnimating else { return }
+        if let saved = liveFullScreen { exitLiveFullScreen(saved); return }
+        if window.styleMask.contains(.fullScreen) || settings.nativeFullScreen { window.nativeToggleFullScreen(); return }
+        if let screen = window.screen ?? NSScreen.main { enterLiveFullScreen(screen) }
     }
 
-    private func enterNotchFullScreen(_ screen: NSScreen) {
+    private func enterLiveFullScreen(_ screen: NSScreen) {
         guard let window else { return }
-        notchFullScreen = (window.frame, window.styleMask, window.aspectRatio)
+        liveFullScreen = (window.frame, window.styleMask, window.aspectRatio)
         NSApp.presentationOptions = [.autoHideMenuBar, .autoHideDock]
         window.styleMask = [.borderless, .fullSizeContentView]
         window.resizeIncrements = NSSize(width: 1, height: 1)     // clears the aspect-ratio constraint
-        window.setFrame(screen.frame, display: true)
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(playerView)
-        showControls()
+        // Keep the picture below the camera housing unless the notch option is on (the strip stays black).
+        playerView.videoTopInset = settings.fullScreenCoversNotch ? 0 : screen.safeAreaInsets.top
+        animate(window, to: screen.frame) { [weak self] in self?.showControls() }
     }
 
-    private func exitNotchFullScreen(_ saved: (frame: NSRect, style: NSWindow.StyleMask, aspect: NSSize)) {
+    private func exitLiveFullScreen(_ saved: (frame: NSRect, style: NSWindow.StyleMask, aspect: NSSize)) {
         guard let window else { return }
-        notchFullScreen = nil
-        window.styleMask = saved.style
-        window.setFrame(saved.frame, display: true)
-        if saved.aspect.width > 0 { window.aspectRatio = saved.aspect }
+        liveFullScreen = nil
         NSApp.presentationOptions = []
-        window.makeFirstResponder(playerView)
-        showControls()
+        playerView.videoTopInset = 0
+        animate(window, to: saved.frame) { [weak self] in
+            window.styleMask = saved.style
+            if saved.aspect.width > 0 { window.aspectRatio = saved.aspect }
+            window.makeFirstResponder(self?.playerView)
+            self?.showControls()
+        }
+    }
+
+    private func animate(_ window: NSWindow, to frame: NSRect, completion: @escaping () -> Void) {
+        fullScreenAnimating = true
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.25
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().setFrame(frame, display: true)
+        }, completionHandler: { [weak self] in
+            window.setFrame(frame, display: true)
+            self?.fullScreenAnimating = false
+            completion()
+        })
     }
     func playerViewDropped(_ urls: [URL]) {
         if let sub = urls.first(where: { ["srt", "vtt", "ass", "ssa"].contains($0.pathExtension.lowercased()) }), engine != nil {
@@ -772,7 +787,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     func windowWillClose(_ notification: Notification) {
         settings.nowPlayingHDR = nil
-        if notchFullScreen != nil { NSApp.presentationOptions = []; notchFullScreen = nil }
+        if liveFullScreen != nil { NSApp.presentationOptions = []; liveFullScreen = nil }
         saveResumePosition()
         closeEngine()
         hideTimer?.invalidate()
@@ -780,6 +795,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
     func windowDidEnterFullScreen(_ notification: Notification) { showControls() }
     func windowDidExitFullScreen(_ notification: Notification) { showControls() }
+
+
 }
 
 /// Routes keys to the player before AppKit's default handling (so arrows don't beep).

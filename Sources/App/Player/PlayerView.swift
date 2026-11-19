@@ -90,8 +90,12 @@ final class PlayerView: NSView {
         addSubview(v, positioned: .below, relativeTo: subtitleLabel)
     }
 
+    /// Black strip kept above the picture (full screen below the camera housing).
+    var videoTopInset: CGFloat = 0 { didSet { if videoTopInset != oldValue { needsLayout = true } } }
+
     override func layout() {
         super.layout()
+        videoView?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - videoTopInset))
         layoutSubtitleFont()
         layoutBitmaps()
     }
