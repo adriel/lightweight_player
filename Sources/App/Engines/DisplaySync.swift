@@ -77,6 +77,7 @@ final class DisplaySync: NSObject {
 
     var summary: String {
         guard refreshHz > 0 else { return "measuring…" }
+        if fps <= 0 { return String(format: "video clock follows audio · A/V offset %+.1f ms (frame rate unknown, no phase lock)", offset * 1000) }
         return String(format: "%.3f → %.3f fps on %.2f Hz (×%.4f) · A/V offset %+.1f ms · phase margin %.1f ms",
                       fps, fps * scale, refreshHz, scale, offset * 1000, 250 / refreshHz - abs(lastErr) * 1000)
     }
@@ -100,8 +101,9 @@ final class DisplaySync: NSObject {
         let s = scale
         let half = period / 2
         // Is this display still a clean multiple (the window may have moved to another screen)?
-        let multiple = ((1 / period) / (fps * s) * 2).rounded() / 2
-        let lockable = multiple >= 1 && abs((1 / period) / (fps * s) / multiple - 1) < 0.0005
+        // fps 0 = unknown frame rate: no phase lock, only keep video in step with the audio clock.
+        let multiple = fps > 0 ? ((1 / period) / (fps * s) * 2).rounded() / 2 : 0
+        let lockable = fps > 0 && multiple >= 1 && abs((1 / period) / (fps * s) / multiple - 1) < 0.0005
 
         var perr = 0.0
         if lockable {

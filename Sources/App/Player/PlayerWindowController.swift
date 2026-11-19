@@ -26,6 +26,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     var onClose: ((PlayerWindowController) -> Void)?
     private var openStarted = Date()
     private let titleTags = TitleTagsModel()
+    private var tagObserver: AnyCancellable?
     /// Set by web links with `full_screen=1`.
     var enterFullScreenWhenReady = false
     private static let openDebug = ProcessInfo.processInfo.environment["LP_OPEN_DEBUG"] != nil
@@ -54,6 +55,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         tags.view.frame.size = NSSize(width: 220, height: 28)
         window.addTitlebarAccessoryViewController(tags)
         tagsAccessory = tags
+        titleTags.onRemoveCrop = { [weak self] in self?.removeCropForThisVideo() }
+        titleTags.onCropSettings = { (NSApp.delegate as? AppDelegate)?.showSettings(nil) }
+        // Re-fit the title and the tag area whenever a tag changes (so nothing runs off the right edge).
+        tagObserver = titleTags.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.fitTitle() } }
         window.fullScreenHandler = { [weak self] in self?.toggleFullScreen() }
         playerView.delegate = self
         playerView.controlBar.delegate = self
@@ -71,7 +76,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         saveResumePosition()
         closeEngine()
         currentURL = url
-        titleTags.decoding = nil; titleTags.hdr = nil; titleTags.engine = nil
+        titleTags.decoding = nil; titleTags.hdr = nil; titleTags.engine = nil; titleTags.audio = nil; titleTags.crop = nil
         PlaybackHistory.shared.didOpen(url, key: resumeKey(url), name: url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent)
         color = settings.colorAdjustment(for: resumeKey(url)) ?? (0, 1, 1)
         claimColorSliders()
@@ -81,7 +86,53 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if url.isFileURL { NSDocumentController.shared.noteNewRecentDocumentURL(url) }
 
         openStarted = Date()
+        pendingResume = settings.resumePlayback ? settings.resumePosition(for: resumeKey(url)) : nil
+        window?.makeKeyAndOrderFront(nil)
+
+        // YouTube / Twitch page: resolve the real stream with yt-dlp first (history keeps the page link).
+        if SiteStreamResolver.handles(url) {
+            resolving = url
+            playerView.setBuffering((0, 0))
+            playerView.flash("Opening \(url.host?.contains("twitch") == true ? "Twitch" : "YouTube") link…")
+            SiteStreamResolver.resolve(url) { [weak self] result in
+                guard let self, self.resolving == url, self.currentURL == url else { return }
+                self.resolving = nil
+                self.playerView.setBuffering(nil)
+                switch result {
+                case .success(let r):
+                    self.fullTitle = r.title; self.fitTitle()
+                    PlaybackHistory.shared.didOpen(url, key: self.resumeKey(url), name: r.title)
+                    if r.isLive { self.pendingResume = nil }
+                    let e: PlayerEngine
+                    if r.isHLS {
+                        // Twitch / live: HLS, which AVPlayer plays natively.
+                        let a = AVPlayerEngine(useMediaExtensions: false)
+                        a.httpHeaders = r.headers
+                        e = a
+                    } else {
+                        // Direct files; YouTube's separate video + audio files go to the FFmpeg engine as two inputs.
+                        let c = SampleBufferEngine()
+                        c.separateAudioURL = r.audioURL
+                        e = c
+                    }
+                    self.startEngine(e, playing: r.streamURL)
+                case .failure(let f):
+                    let a = NSAlert()
+                    a.messageText = "Can't play this link"
+                    a.informativeText = f.description
+                    if let w = self.window { a.beginSheetModal(for: w) } else { a.runModal() }
+                }
+            }
+            showControls()
+            return
+        }
         let e = forceSampleBufferEngine || ProcessInfo.processInfo.environment["LP_FORCE_C"] != nil ? SampleBufferEngine() : makeEngine(for: url)
+        startEngine(e, playing: url)
+    }
+
+    private var resolving: URL?
+
+    private func startEngine(_ e: PlayerEngine, playing url: URL) {
         engine = e
         e.volume = Float(muted ? 0 : settings.volume)
         playerView.setVideoView(e.view)
@@ -89,9 +140,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         e.onEvent = { [weak self] ev in self?.handle(ev) }
         e.cues.clear()
         e.open(url)
-        pendingResume = settings.resumePlayback ? settings.resumePosition(for: resumeKey(url)) : nil
         startUITimer()
-        window?.makeKeyAndOrderFront(nil)
         showControls()
     }
 
@@ -134,6 +183,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 open(u, forceSampleBufferEngine: true)
                 playerView.flash("Using built-in engine")
             }
+        case .videoSizeChanged:
+            (engine.view as? LayerHostView)?.videoSize = engine.naturalSize
+            sizeWindowToVideo()
+            startCropDetection()
         case .ended:
             if let u = currentURL { settings.setResumePosition(nil, for: resumeKey(u)) }
             showControls()
@@ -216,22 +269,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         cropTimer?.invalidate()
         cropDecider.reset()
         cropSamples = 0
-        // Known file: apply the remembered crop immediately and skip sampling entirely.
-        if let url = currentURL, let known = settings.rememberedCrop(for: resumeKey(url)) {
-            cropRemembered = true
-            applyCrop(settings.autoCrop ? known : nil)
-            return
-        }
         cropRemembered = false
+        if let url = currentURL {
+            // "Don't crop this video" from the Crop tag: leave it alone entirely.
+            if settings.cropDisabled(for: resumeKey(url)) { cropRemembered = true; applyCrop(nil); return }
+            // Known file: apply the remembered crop at once, but keep sampling — more picture can show up later.
+            if let known = settings.rememberedCrop(for: resumeKey(url)) {
+                if let k = known { cropDecider.seed(k) } else { cropDecider.seed(CGRect(x: 0, y: 0, width: 1, height: 1)) }
+                applyCrop(settings.autoCrop ? known : nil)
+                cropSamples = 4                      // skip the quick start-up samples
+                scheduleCropSample()
+                return
+            }
+        }
         applyCrop(nil)
         scheduleCropSample()
     }
     private var cropRemembered = false
 
     /// Samples at ~2, 6, 15, 40 s after start, then every 2 minutes (scene changes can reveal more picture).
-    private func scheduleCropSample() {
-        let delays: [Double] = [2, 4, 9, 25]
-        let d = cropSamples < delays.count ? delays[cropSamples] : 120
+    private func scheduleCropSample(confirmSoon: Bool = false) {
+        let delays: [Double] = [2, 4, 9, 25, 45]
+        let d = confirmSoon ? 4 : cropSamples < delays.count ? delays[cropSamples] : 120
         cropTimer?.invalidate()
         cropTimer = Timer.scheduledTimer(withTimeInterval: d, repeats: false) { [weak self] _ in self?.sampleCrop() }
     }
@@ -250,26 +309,25 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 }
                 DispatchQueue.main.async {
                     guard let self, self.engine === engine else { return }
-                    if let r { self.cropDecider.add(r) }
+                    var newShape = false
+                    if let r { newShape = self.cropDecider.add(r, at: engine.currentTime) }
                     self.cropSamples += 1
                     self.updateCrop()
-                    self.scheduleCropSample()
+                    // A bigger picture area than the current crop: check again shortly to confirm it.
+                    self.scheduleCropSample(confirmSoon: newShape)
                 }
             }
         }
     }
 
     private func updateCrop() {
-        if cropRemembered {
-            // Toggle (C) on a remembered file: just switch the stored crop on/off.
-            let known = currentURL.flatMap { settings.rememberedCrop(for: resumeKey($0)) } ?? nil
-            applyCrop(settings.autoCrop ? known : nil)
-            return
-        }
-        let d = settings.autoCrop ? cropDecider.decision : nil
-        // Remember once the initial samples (2/6/15/40 s) are in, or whenever the decision changes later.
-        if settings.autoCrop, let url = currentURL, cropDecider.validSamples >= 4 || (cropDecider.validSamples >= 2 && d != nil) {
-            settings.rememberCrop(d, for: resumeKey(url))
+        if cropRemembered { applyCrop(nil); return }        // cropping turned off for this video
+        let decided = cropDecider.decision
+        let d = settings.autoCrop ? decided : nil
+        // Remember the decision once there's evidence (samples or a seed), so reopening applies it at once.
+        if let url = currentURL, cropDecider.validSamples >= 2 {
+            let stored = settings.rememberedCrop(for: resumeKey(url))
+            if stored == nil || stored! != decided { settings.rememberCrop(decided, for: resumeKey(url)) }
         }
         func close(_ a: CGRect?, _ b: CGRect?) -> Bool {
             switch (a, b) {
@@ -289,6 +347,16 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         (engine?.view as? LayerHostView)?.crop = c
         playerView.crop = c
         adjustWindowAspect()
+        titleTags.crop = c == nil ? nil : cropDescription
+    }
+
+    /// From the title bar's Crop tag: show the whole picture for this video and remember that choice.
+    private func removeCropForThisVideo() {
+        cropTimer?.invalidate()
+        if let u = currentURL { settings.setCropDisabled(true, for: resumeKey(u)) }
+        cropRemembered = true
+        applyCrop(nil)
+        playerView.flash("Showing the full picture")
     }
 
     /// Keep the window height and change its width to the (cropped) video aspect.
@@ -361,6 +429,40 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     func playerViewMouseActivity() { showControls() }
 
+    /// Pointer left the player: hide the controls straight away while playing (like IINA).
+    func playerViewMouseExited() {
+        guard engine?.isPlaying == true, !titleTags.hovering, !isFullScreen else { return }
+        hideTimer?.invalidate()
+        hideTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+            guard let self, let window = self.window else { return }
+            // Still outside (not just passing over the title bar or a tag panel)?
+            if !window.frame.contains(NSEvent.mouseLocation) && !self.titleTags.hovering { self.hideControlsNow() }
+        }
+    }
+
+    private func hideControlsNow() {
+        guard controlsVisible else { return }
+        controlsVisible = false
+        playerView.setControlsVisible(false, animated: true)
+        setTitlebarVisible(false)
+    }
+
+    /// Trackpad pinch: scale the window around its centre, keeping the video's aspect and staying on screen.
+    func playerViewMagnify(_ factor: CGFloat, ended: Bool) {
+        guard let window, !isFullScreen, engine != nil, let screen = window.screen ?? NSScreen.main else { return }
+        let f = window.frame
+        let vf = screen.visibleFrame
+        var w = f.width * factor
+        let aspect = f.height / max(f.width, 1)
+        w = min(max(w, window.minSize.width), vf.width)
+        var h = w * aspect
+        if h > vf.height { h = vf.height; w = h / aspect }
+        var r = NSRect(x: f.midX - w / 2, y: f.midY - h / 2, width: w.rounded(), height: h.rounded())
+        r.origin.x = min(max(r.origin.x, vf.minX), vf.maxX - r.width)
+        r.origin.y = min(max(r.origin.y, vf.minY), vf.maxY - r.height)
+        window.setFrame(r, display: true)
+    }
+
     private func showControls() {
         if !controlsVisible {
             controlsVisible = true
@@ -376,7 +478,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         guard let window, engine != nil else { return }
         // Keep visible while the pointer is over the bar or the app isn't playing.
         let p = playerView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        if playerView.controlBar.frame.contains(p) || engine?.isPlaying == false {
+        if playerView.controlBar.frame.contains(p) || engine?.isPlaying == false || titleTags.hovering {
             hideTimer = Timer.scheduledTimer(withTimeInterval: settings.controlsHideDelay, repeats: false) { [weak self] _ in self?.hideControlsIfIdle() }
             return
         }
@@ -411,12 +513,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         switch e.charactersIgnoringModifiers?.lowercased() {
         case "f": toggleFullScreen(); return true
         case "m": controlBarToggleMute(); return true
-        case "c":
-            settings.autoCrop.toggle()
-            if settings.autoCrop && !cropRemembered && cropDecider.validSamples < 2 { sampleCrop() }
-            updateCrop()
-            playerView.flash(settings.autoCrop ? "Auto-crop on" : "Auto-crop off")
-            return true
+        case "c": toggleAutoCrop(nil); return true
         case "s": cycleSubtitles(); return true
         case "a": cycleAudioTrack(nil); return true
         case ".": stepForward(nil); return true
@@ -610,16 +707,29 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func updateTitleTags() {
         titleTags.decoding = engine?.videoDecoding; titleTags.hdr = engine?.hdrFormat; titleTags.hdrOutput = settings.hdrEnabled
+        titleTags.audio = engine?.audioDecoding
         if let e = engine { titleTags.engine = (e.kind.tagName, e.mediaInfo.engine.isEmpty ? e.kind.label : e.mediaInfo.engine) }
         titleTags.edrHeadroom = Double(window?.screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1)
         DispatchQueue.main.async { [weak self] in self?.fitTitle() }
         // AVFoundation fills these in asynchronously; refresh once more shortly after.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self, let e = self.engine else { return }
-            self.titleTags.decoding = e.videoDecoding; self.titleTags.hdr = e.hdrFormat
+            self.titleTags.decoding = e.videoDecoding; self.titleTags.hdr = e.hdrFormat; self.titleTags.audio = e.audioDecoding
             if !e.mediaInfo.engine.isEmpty { self.titleTags.engine = (e.kind.tagName, e.mediaInfo.engine) }
             self.fitTitle()
         }
+    }
+
+    // MARK: Auto-crop toggle (C, View menu, brightness popover)
+
+    @objc func toggleAutoCrop(_ sender: Any?) {
+        settings.autoCrop.toggle()          // applied to every window by the settings observer
+        playerView.flash(settings.autoCrop ? "Crop black bars: on" : "Crop black bars: off")
+    }
+
+    private func autoCropChanged() {
+        if settings.autoCrop && !cropRemembered && cropDecider.validSamples < 2 { sampleCrop() }
+        updateCrop()
     }
 
     // MARK: File menu
@@ -627,6 +737,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// "Show Current File in Finder" only for local files; everything else stays enabled.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(showCurrentFileInFinder(_:)) { return currentURL?.isFileURL == true }
+        if item.action == #selector(toggleAutoCrop(_:)) { item.state = settings.autoCrop ? .on : .off }
         return true
     }
 
@@ -746,6 +857,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             s.$gamma.sink { [weak self] _ in DispatchQueue.main.async { self?.colorSettingChanged() } },
             s.$contrast.sink { [weak self] _ in DispatchQueue.main.async { self?.colorSettingChanged() } },
             s.$subtitleFontSize.sink { [weak self] v in self?.playerView.subtitleScale = v },
+            s.$autoCrop.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.autoCropChanged() } },
             s.$hdrEnabled.dropFirst().sink { [weak self] v in
                 DispatchQueue.main.async { self?.engine?.setHDR(v); self?.titleTags.hdrOutput = v; self?.playerView.flash(v ? "HDR on" : "HDR off (tone-mapped to SDR)") }
             },

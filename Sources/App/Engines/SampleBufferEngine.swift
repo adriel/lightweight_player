@@ -73,6 +73,8 @@ final class SampleBufferEngine: PlayerEngine {
             DispatchQueue.main.async { self?.lastMetrics = str }
             if log { DispatchQueue.main.async { guard let self else { return }; let pb = self.videoRenderer.displayedPixelBuffer()
                 let tf = pb.flatMap { CVBufferCopyAttachment($0, kCVImageBufferTransferFunctionKey, nil) as? String } ?? "-"
+                if let a = self.audioSourceHTTP { let st = a.stats; NSLog("audio src: ahead %lld KB, downloading %d, %.0f KB/s, stalled %d, cached %lld/%lld KB", st.aheadBytes / 1024, st.downloading ? 1 : 0, st.bytesPerSecond / 1024, a.isStalled ? 1 : 0, st.cachedBytes / 1024, st.length / 1024) }
+                NSLog("clock: rate %.3f timebase %.3f wantsPlay %d buffering %d audio status %d err %@ sufficient %d decoupled %d videoSufficient %d delays %d video status %d err %@", self.synchronizer.rate, CMTimebaseGetRate(self.synchronizer.timebase), self.wantsPlay ? 1 : 0, self.buffering == nil ? 0 : 1, self.audioRenderer.status.rawValue, self.audioRenderer.error.map { "\($0)" } ?? "-", self.audioRenderer.hasSufficientMediaDataForReliablePlaybackStart ? 1 : 0, self.decoupled ? 1 : 0, self.videoRenderer.hasSufficientMediaDataForReliablePlaybackStart ? 1 : 0, self.synchronizer.delaysRateChangeUntilHasSufficientMediaData ? 1 : 0, self.videoRenderer.status.rawValue, self.videoRenderer.error.map { "\($0)" } ?? "-")
                 NSLog("metrics: %@ · lead %.2f s · audio lead %.2f s · frame %@ %@", str, self.lastVideoPTS - self.currentTime, self.lastAudioPTS - self.currentTime, pb.map { CVPixelBufferGetPixelFormatType($0).fourCCString } ?? "-", tf) } }
         }
     }
@@ -117,12 +119,26 @@ final class SampleBufferEngine: PlayerEngine {
                     try s.open()
                     src = s
                     source = s
+                    // Streams: our buffering monitor decides when there's enough data; AVFoundation's own guard
+                    // can wait forever on a separate audio input with only a couple of seconds queued.
+                    synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
                 }
                 let d = try FFDemuxer(url: path, source: src)
                 if let src, d.duration > 0 {
                     // Read-ahead target = N minutes at the file's average bitrate.
                     let bps = d.bitRate > 0 ? Double(d.bitRate) / 8 : Double(src.length) / d.duration
                     src.readAheadBytes = Int64(bps * Settings.shared.bufferMinutes * 60)
+                }
+                // Separate audio input (YouTube's high-quality formats: video-only + audio-only files).
+                if let au = separateAudioURL {
+                    let st = Settings.shared
+                    let s = try CachedHTTPSource(url: au, cacheDirectory: st.cacheDirectory)
+                    s.timeout = st.networkTimeout
+                    try s.open()
+                    let ad = try FFDemuxer(url: au.absoluteString, source: s)
+                    if ad.duration > 0 { s.readAheadBytes = Int64(Double(s.length) / ad.duration * st.bufferMinutes * 60) }
+                    audioSourceHTTP = s
+                    audioDemuxer = ad
                 }
                 _naturalSize = d.naturalSize
                 var info = d.mediaInfo()
@@ -136,12 +152,13 @@ final class SampleBufferEngine: PlayerEngine {
                 demuxer = d
                 _duration = d.duration
                 let hdr = d.videoFormat.map(FFDemuxer.isHDR) ?? false
-                let hdrName = d.hdrFormatName, decoding = d.videoDecoding
-                let tracks = d.audioStreams, chapters = d.chapters, audioIdx = Int(d.audioIndex)
+                let ad = audioDemuxer ?? d
+                let hdrName = d.hdrFormatName, decoding = d.videoDecoding, audioDec = ad.audioDecoding
+                let tracks = audioDemuxer == nil ? d.audioStreams : [], chapters = d.chapters, audioIdx = Int(ad.audioIndex)
                 let frame = d.frameRateInfo.map { (1 / $0.fps, $0.base) }
                 DispatchQueue.main.async {
                     self.isHDRVideo = hdr || hdrName != nil
-                    self.hdrFormat = hdrName; self.videoDecoding = decoding
+                    self.hdrFormat = hdrName; self.videoDecoding = decoding; self.audioDecoding = audioDec
                     self.audioTracks = tracks; self.chapters = chapters
                     self.selectedAudioTrack = audioIdx >= 0 ? audioIdx : nil
                     if let frame { self.frameDuration = frame.0; self.frameBase = frame.1 }
@@ -151,18 +168,23 @@ final class SampleBufferEngine: PlayerEngine {
                 let fr = d.frameRateInfo
                 // Display sync needs video + audio (the audio clock is the master) and a clean refresh multiple.
                 var decouple = false
-                if let fr, d.videoIndex >= 0, d.audioIndex >= 0, ProcessInfo.processInfo.environment["LP_NO_DISPLAY_SYNC"] == nil,
+                if let fr, d.videoIndex >= 0, ad.audioIndex >= 0, ProcessInfo.processInfo.environment["LP_NO_DISPLAY_SYNC"] == nil,
                    let sc = DisplaySync.scale(fps: fr.fps, refreshHz: DisplaySync.mainDisplayRefreshHz) {
                     timeScale = sc
                     playRate = Float(sc)
                     decouple = true
+                } else if fr == nil, d.videoIndex >= 0, audioDemuxer != nil, ProcessInfo.processInfo.environment["LP_NO_DISPLAY_SYNC"] == nil {
+                    // Separate audio input with no known frame rate (YouTube VP9/WebM): still give video its own clock
+                    // slaved to the audio (no refresh-phase lock without a frame rate) — attached directly to the
+                    // synchronizer, the two-input case never starts its clock.
+                    decouple = true
                 }
                 DispatchQueue.main.async {
                     self.warnings = w; self.notices = n
-                    if decouple, let fr {
+                    if decouple {
                         self.displayLayer.controlTimebase = self.videoTimebase
                         self.decoupled = true
-                        self.startDisplaySync(fps: fr.fps, base: fr.base)
+                        self.startDisplaySync(fps: fr?.fps ?? 0, base: fr?.base ?? 0)
                     } else {
                         self.synchronizer.addRenderer(self.displayLayer)
                     }
@@ -171,9 +193,9 @@ final class SampleBufferEngine: PlayerEngine {
                     if ProcessInfo.processInfo.environment["LP_VIDEO_METRICS"] != nil {
                         self.metricsTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshMetrics(log: true) }
                     }
-                    self.queue.async { if d.videoIndex >= 0 || d.audioIndex >= 0 { self.startFeeding() } }
+                    self.queue.async { if d.videoIndex >= 0 || ad.audioIndex >= 0 { self.startFeeding() } }
                 }
-                if d.videoIndex < 0 && d.audioIndex < 0 {
+                if d.videoIndex < 0 && ad.audioIndex < 0 {
                     DispatchQueue.main.async { self.onEvent?(.failed("No playable streams")) }
                     return
                 }
@@ -290,6 +312,7 @@ final class SampleBufferEngine: PlayerEngine {
     private(set) var isHDRVideo = false
     private(set) var hdrFormat: String?
     private(set) var videoDecoding: VideoDecodingInfo?
+    private(set) var audioDecoding: (codec: String, decoder: String)?
 
     // MARK: Buffering (network streams)
     // When the demuxer blocks waiting for the network the renderers run dry while the clock keeps going, so frames
@@ -307,27 +330,39 @@ final class SampleBufferEngine: PlayerEngine {
 
     private func checkBuffering() {
         guard let source else { return }
-        let st = source.stats
-        let complete = st.length > 0 && st.cachedBytes >= st.length
-        let bps = st.length > 0 && _duration > 0 ? Double(st.length) / _duration : 0      // average media bitrate
-        let need = max(Int64(bps * Self.resumeAfterSeconds), 1 << 20)
-        let stalled = source.isStalled
-        if buffering == nil {
-            // Starving while playing (or before the first frame of a stream): pause the clock and show progress.
-            guard !complete, stalled || !hasShownFirstFrame, wantsPlay || !hasShownFirstFrame else { return }
-            if hasShownFirstFrame { synchronizer.setRate(0, time: synchronizer.currentTime()) }
+        // Each input (the file, plus YouTube's separate audio file) must have ~3 s buffered ahead of its reader.
+        func state(_ src: CachedHTTPSource) -> (complete: Bool, ahead: Int64, need: Int64, stalled: Bool, bps: Double) {
+            let st = src.stats
+            let rate = st.length > 0 && _duration > 0 ? Double(st.length) / _duration : 0
+            return (st.length > 0 && st.cachedBytes >= st.length, st.aheadBytes, max(Int64(rate * Self.resumeAfterSeconds), 256 << 10), src.isStalled, st.bytesPerSecond)
         }
-        let progress = min(1, Double(st.aheadBytes) / Double(need))
-        if ProcessInfo.processInfo.environment["LP_BUFFER_DEBUG"] != nil { NSLog("buffer: stalled=%d ahead=%lld need=%lld state=%@", stalled ? 1 : 0, st.aheadBytes, need, buffering == nil ? "play" : "buffering") }
-        if complete || (!stalled && st.aheadBytes >= need && hasShownFirstFrame) {
-            if buffering != nil, wantsPlay { synchronizer.setRate(playRate, time: synchronizer.currentTime()) }
+        var inputs = [state(source)]
+        if let a = audioSourceHTTP { inputs.append(state(a)) }
+        let complete = inputs.allSatisfy(\.complete)
+        let stalled = inputs.contains(where: \.stalled)
+        let ready = inputs.allSatisfy { $0.complete || $0.ahead >= $0.need }
+        if buffering == nil {
+            // Starving while playing, or a stream starting up: hold the clock and show progress.
+            guard !complete, stalled || !hasShownFirstFrame, wantsPlay || !hasShownFirstFrame else { return }
+            synchronizer.setRate(0, time: synchronizer.currentTime())
+        }
+        let progress = inputs.map { $0.complete ? 1 : min(1, Double($0.ahead) / Double($0.need)) }.min() ?? 0
+        if ProcessInfo.processInfo.environment["LP_BUFFER_DEBUG"] != nil { NSLog("buffer: stalled=%d progress=%.2f state=%@", stalled ? 1 : 0, progress, buffering == nil ? "play" : "buffering") }
+        if complete || (!stalled && ready && hasShownFirstFrame) {
+            if buffering != nil, wantsPlay {
+                synchronizer.setRate(playRate, time: synchronizer.currentTime())
+                // Audio reading may have paused at its lead limit while the clock was held; restart it, since only
+                // video feeding would otherwise wake it (and video waits for the clock).
+                queue.async { [self] in if audioThrottled { audioThrottled = false; requestAudio(generation) } }
+            }
             buffering = nil
         } else {
-            buffering = (progress, st.bytesPerSecond)
+            buffering = (progress, inputs.reduce(0) { $0 + $1.bps })
             // A seek or play() meanwhile restarts the clock; keep it held until enough is buffered.
-            if hasShownFirstFrame, synchronizer.rate != 0 { synchronizer.setRate(0, time: synchronizer.currentTime()) }
+            if synchronizer.rate != 0 { synchronizer.setRate(0, time: synchronizer.currentTime()) }
         }
     }
+
     private(set) var audioTracks: [AudioTrackInfo] = []
     private(set) var selectedAudioTrack: Int?
     private(set) var chapters: [ChapterInfo] = []
@@ -433,6 +468,8 @@ final class SampleBufferEngine: PlayerEngine {
             freePending()
             eof = false
             demuxer.seek(to: target, forward: forward && !accurate)
+            audioDemuxer?.seek(to: target)
+            audioEOF = false
             seekTarget = accurate ? target : nil
             audioCutoff = accurate ? target : nil
             firstFrameSignaled = false
@@ -456,7 +493,9 @@ final class SampleBufferEngine: PlayerEngine {
         bufferTimer?.invalidate()
         displaySync?.stop()
         demuxer?.interrupt()
+        audioDemuxer?.interrupt()
         source?.close()
+        audioSourceHTTP?.close()
         queue.sync {
             videoRenderer.stopRequestingMediaData()
             audioRenderer.stopRequestingMediaData()
@@ -493,7 +532,7 @@ final class SampleBufferEngine: PlayerEngine {
         if demuxer?.videoIndex ?? -1 >= 0 {
             videoRenderer.requestMediaDataWhenReady(on: queue) { [weak self] in self?.feedVideo(gen) }
         }
-        if demuxer?.audioIndex ?? -1 >= 0 { requestAudio(gen) }
+        if (audioDemuxer ?? demuxer)?.audioIndex ?? -1 >= 0 { requestAudio(gen) }
     }
 
     private func requestAudio(_ gen: Int) {
@@ -595,8 +634,20 @@ final class SampleBufferEngine: PlayerEngine {
     }
 
     /// Re-times a video sample by the display-sync phase offset (a few ms).
+    /// Audio reading pauses only when it's well ahead: of the newest video packet (so video packets read past
+    /// it don't pile up in memory) *and* of the clock by a second — the decoded-video queue is short (~0.15 s), so
+    /// the video position alone would starve the audio renderer. A separate audio input never piles up video.
+    private var audioMayWait: Bool {
+        guard hasVideo, !eof else { return false }
+        let clock = synchronizer.currentTime().seconds
+        // Separate audio input (YouTube): no video pile-up, but don't let audio reads (which block on a slow
+        // download) monopolise the shared feed queue — 2 s ahead of the playhead is plenty.
+        if audioDemuxer != nil { return lastAudioPTS > clock + 2.0 }
+        return lastAudioPTS > max(lastVideoPTS + Self.audioLeadOverVideo, clock + 1.0)
+    }
+
     private func resumeAudioIfThrottled(_ gen: Int) {
-        guard audioThrottled, eof || lastAudioPTS < lastVideoPTS + Self.audioLeadOverVideo else { return }
+        guard audioThrottled, !audioMayWait else { return }
         audioThrottled = false
         requestAudio(gen)
     }
@@ -605,13 +656,13 @@ final class SampleBufferEngine: PlayerEngine {
         guard gen == generation else { return }
         if scrubHold { audioRenderer.stopRequestingMediaData(); return }
         while audioRenderer.isReadyForMoreMediaData {
-            if hasVideo && !eof && lastAudioPTS > lastVideoPTS + Self.audioLeadOverVideo {
+            if audioMayWait {
                 audioThrottled = true
                 audioRenderer.stopRequestingMediaData()
                 return
             }
             guard let sb = nextAudio() else {
-                if eof { audioRenderer.stopRequestingMediaData() }
+                if eof || audioEOF { audioRenderer.stopRequestingMediaData() }
                 return
             }
             let pts = sb.presentationTimeStamp.seconds
@@ -621,6 +672,8 @@ final class SampleBufferEngine: PlayerEngine {
             }
             let timed = continuousAudio(sb)
             lastAudioPTS = timed.presentationTimeStamp.seconds
+            dbgAudioCount += 1
+            if dbgAudioCount % 100 == 1, ProcessInfo.processInfo.environment["LP_OPEN_DEBUG"] != nil { NSLog("audio feed #%d pts %.2f (raw %.2f) clock %.2f ready %d", dbgAudioCount, lastAudioPTS, pts, synchronizer.currentTime().seconds, audioRenderer.isReadyForMoreMediaData ? 1 : 0) }
             if Self.audioDebug { debugAudio(timed) }
             audioRenderer.enqueue(timed)
         }
@@ -644,17 +697,35 @@ final class SampleBufferEngine: PlayerEngine {
     }
 
     private func nextAudio() -> CMSampleBuffer? {
-        guard let sw = demuxer?.swAudio else { return next(video: false) }
+        guard let sw = (audioDemuxer ?? demuxer)?.swAudio else { return next(video: false) }
         while decodedAudio.isEmpty {
             if let sb = next(video: false) { decodedAudio = sw.decode(sb) }
-            else if eof && !audioDrained { audioDrained = true; decodedAudio = sw.decode(nil); if decodedAudio.isEmpty { return nil } }
+            else if (audioDemuxer != nil ? audioEOF : eof) && !audioDrained { audioDrained = true; decodedAudio = sw.decode(nil); if decodedAudio.isEmpty { return nil } }
             else { return nil }
         }
         return decodedAudio.removeFirst()
     }
 
     /// Pops the next sample for one renderer, demuxing (and stashing the other stream's samples) as needed.
+    // Separate audio input (set before open()): audio packets come from here instead of the main demuxer.
+    var separateAudioURL: URL?
+    private var audioDemuxer: FFDemuxer?
+    private var audioSourceHTTP: CachedHTTPSource?
+    private var audioEOF = false
+    private var dbgAudioCount = 0
+
     private func next(video: Bool) -> CMSampleBuffer? {
+        if !video, let ad = audioDemuxer {
+            guard !audioEOF else { return nil }
+            while true {
+                guard let item = ad.readItem() else {
+                    audioEOF = true
+                    if ProcessInfo.processInfo.environment["LP_OPEN_DEBUG"] != nil { NSLog("audio input ended at %.2f s (last audio pts)", lastAudioPTS) }
+                    return nil
+                }
+                if case .audio(let sb) = item { return sb }
+            }
+        }
         if video, !videoPending.isEmpty { return videoPending.removeFirst() }
         if !video, !audioPending.isEmpty { return audioPending.removeFirst() }
         guard let demuxer, !eof else { return nil }

@@ -8,8 +8,9 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
     var onOpenLocation: (() -> Void)?
 
     init() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 440),
-                         styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 480),
+                         styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        w.contentMinSize = NSSize(width: 520, height: 360)
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
         w.isMovableByWindowBackground = true
@@ -31,6 +32,7 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
                                      host.topAnchor.constraint(equalTo: fx.topAnchor), host.bottomAnchor.constraint(equalTo: fx.bottomAnchor)])
         w.contentView = fx
         w.center()
+        w.setFrameAutosaveName("WelcomeWindow")      // remembers the size the user gives it
     }
     required init?(coder: NSCoder) { fatalError() }
 }
@@ -47,7 +49,7 @@ struct WelcomeView: View {
         history.entries.filter { e in
             guard let u = URL(string: e.url) else { return false }
             return !u.isFileURL || FileManager.default.fileExists(atPath: u.path)
-        }.prefix(9).map { $0 }
+        }.prefix(30).map { $0 }
     }
 
     var body: some View {
@@ -72,14 +74,16 @@ struct WelcomeView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                VStack(spacing: 2) {
-                    ForEach(recent) { e in row(e) }
+                ScrollView {
+                    VStack(spacing: 2) {
+                        ForEach(recent) { e in row(e) }
+                    }
+                    .padding(.horizontal, 22).padding(.bottom, 16)
                 }
-                .padding(.horizontal, 22)
-                Spacer(minLength: 16)
+                .scrollIndicators(.automatic)
             }
         }
-        .frame(width: 560, height: 440)
+        .frame(minWidth: 520, maxWidth: .infinity, minHeight: 360, maxHeight: .infinity)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             _ = providers.first?.loadObject(ofClass: URL.self) { url, _ in if let url { DispatchQueue.main.async { openRecent(url) } } }
             return true

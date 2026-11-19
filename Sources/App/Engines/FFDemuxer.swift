@@ -526,7 +526,7 @@ final class FFDemuxer {
         }
         audioFramesPerPacket = asbd.mFramesPerPacket
         var layout = AudioChannelLayout()
-        layout.mChannelLayoutTag = channelLayoutTag(Int(asbd.mChannelsPerFrame))
+        layout.mChannelLayoutTag = channelLayoutTag(Int(asbd.mChannelsPerFrame), aac: asbd.mFormatID == kAudioFormatMPEG4AAC || asbd.mFormatID == kAudioFormatMPEG4AAC_HE)
         var fd: CMAudioFormatDescription?
         let status: OSStatus = cookie.map { c in
             c.withUnsafeBytes { raw in
@@ -537,13 +537,26 @@ final class FFDemuxer {
         audioFormat = fd
     }
 
-    private func channelLayoutTag(_ ch: Int) -> AudioChannelLayoutTag {
+    /// AAC has its own channel order (centre first: C L R Ls Rs LFE); describing 5.1 AAC with the generic MPEG
+    /// layout stops Core Audio's AAC decoder from starting (seen with YouTube's 5.1 tracks).
+    private func channelLayoutTag(_ ch: Int, aac: Bool = false) -> AudioChannelLayoutTag {
+        if aac {
+            switch ch {
+            case 3: return kAudioChannelLayoutTag_AAC_3_0
+            case 4: return kAudioChannelLayoutTag_AAC_4_0
+            case 5: return kAudioChannelLayoutTag_AAC_5_0
+            case 6: return kAudioChannelLayoutTag_AAC_5_1
+            case 7: return kAudioChannelLayoutTag_AAC_6_1
+            case 8: return kAudioChannelLayoutTag_AAC_7_1
+            default: break
+            }
+        }
         switch ch {
-        case 1: kAudioChannelLayoutTag_Mono
-        case 2: kAudioChannelLayoutTag_Stereo
-        case 6: kAudioChannelLayoutTag_MPEG_5_1_A
-        case 8: kAudioChannelLayoutTag_MPEG_7_1_C
-        default: kAudioChannelLayoutTag_DiscreteInOrder | AudioChannelLayoutTag(ch)
+        case 1: return kAudioChannelLayoutTag_Mono
+        case 2: return kAudioChannelLayoutTag_Stereo
+        case 6: return kAudioChannelLayoutTag_MPEG_5_1_A
+        case 8: return kAudioChannelLayoutTag_MPEG_7_1_C
+        default: return kAudioChannelLayoutTag_DiscreteInOrder | AudioChannelLayoutTag(ch)
         }
     }
 
@@ -676,6 +689,21 @@ final class FFDemuxer {
             if tf == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String) { return "HLG" }
             return nil
         }
+    }
+
+    /// Decoder in use for the audio stream.
+    var audioDecoding: (codec: String, decoder: String)? {
+        guard audioIndex >= 0 else { return nil }
+        let p = stream(audioIndex).pointee.codecpar.pointee
+        let ch = Int(p.ch_layout.nb_channels)
+        let chs = ch == 6 ? "5.1" : ch == 8 ? "7.1" : ch == 2 ? "stereo" : ch == 1 ? "mono" : "\(ch) ch"
+        let profile = avcodec_profile_name(p.codec_id, p.profile).map { String(cString: $0) }
+        let codec = (profile.map { "\(audioCodecName.uppercased()) (\($0))" } ?? audioCodecName.uppercased()) + " \(chs)"
+        if swAudio != nil {
+            let core = Settings.shared.dtsCoreOnly && p.codec_id == AV_CODEC_ID_DTS ? ", DTS core only" : ""
+            return (codec, "FFmpeg on the CPU → PCM\(core)")
+        }
+        return (codec, "Core Audio (AudioToolbox)")
     }
 
     /// Decoder in use for the video stream.

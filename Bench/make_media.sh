@@ -2,8 +2,8 @@
 # Builds the benchmark/test clips into Bench/media from the user's source files + synthetic sources.
 set -u
 cd "${0:a:h}/media"
-MP4SRC="/path/to/twitch-vod.mp4"
-MKVSRC="/path/to/4k-hdr10-remux.mkv"
+MP4SRC="${MP4SRC:?set MP4SRC to a long 1080p H.264 MP4 (e.g. a stream VOD)}"
+MKVSRC="${MKVSRC:?set MKVSRC to a 4K HDR10 HEVC Blu-ray remux MKV (DTS-HD, PGS)}"
 FF=(ffmpeg -hide_banner -loglevel error -y)
 
 cat > subs_en.srt <<'SRT'

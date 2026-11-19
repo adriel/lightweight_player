@@ -5,6 +5,8 @@ protocol PlayerViewDelegate: AnyObject {
     func playerViewDoubleClicked()
     func playerViewDropped(_ urls: [URL])
     func playerViewMouseActivity()
+    func playerViewMouseExited()
+    func playerViewMagnify(_ factor: CGFloat, ended: Bool)
 }
 
 /// Root content view: video (engine view), subtitle overlay, placeholder text and the floating control bar.
@@ -270,6 +272,9 @@ final class PlayerView: NSView {
     }
     override func mouseMoved(with e: NSEvent) { delegate?.playerViewMouseActivity() }
     override func mouseEntered(with e: NSEvent) { delegate?.playerViewMouseActivity() }
+    override func mouseExited(with e: NSEvent) { delegate?.playerViewMouseExited() }
+    /// Trackpad pinch resizes the player window.
+    override func magnify(with e: NSEvent) { delegate?.playerViewMagnify(1 + e.magnification, ended: e.phase == .ended || e.phase == .cancelled) }
     override func mouseDown(with e: NSEvent) {
         if e.clickCount == 2 { delegate?.playerViewDoubleClicked() }
         else { window?.performDrag(with: e) }

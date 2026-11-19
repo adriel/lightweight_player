@@ -16,12 +16,15 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     let cues = CueStore()
     private var observers: [NSKeyValueObservation] = []
     private var endObserver: Any?
-    private var asset: AVURLAsset?
+    private var asset: AVAsset?
     private var subtitleAssetTracks: [Int32: AVAssetTrack] = [:]
     private var subtitleLoad: Task<Void, Never>?
     private var _subtitleTracks: [SubtitleTrackInfo] = []
     private var _naturalSize = CGSize.zero
     private static var registeredReaders = false
+
+    /// Extra HTTP headers for remote streams (YouTube/Twitch need yt-dlp's User-Agent etc.).
+    var httpHeaders: [String: String] = [:]
 
     init(useMediaExtensions: Bool) {
         kind = useMediaExtensions ? .avplayerExt : .avplayer
@@ -55,7 +58,12 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     func appendWarning(_ message: String) { warnings.append(EngineWarning(message: message)) }
 
     func open(_ url: URL) {
-        let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
+        var options: [String: Any] = [AVURLAssetPreferPreciseDurationAndTimingKey: false]
+        if !httpHeaders.isEmpty { options["AVURLAssetHTTPHeaderFieldsKey"] = httpHeaders }   // e.g. yt-dlp's headers
+        openAsset(AVURLAsset(url: url, options: options), url: url)
+    }
+
+    private func openAsset(_ asset: AVAsset, url: URL) {
         self.asset = asset
         let item = AVPlayerItem(asset: asset)
         Task { @MainActor [weak self] in
@@ -109,9 +117,37 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
                 }
                 self.videoDecoding = VideoDecodingInfo(hardware: hw, codec: codecName, decoder: hw ? "VideoToolbox (AVPlayer)" : "AVFoundation software decoder")
             }
+            if let a = try? await asset.loadTracks(withMediaType: .audio).first, let fd = (try? await a.load(.formatDescriptions))?.first {
+                let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fd)?.pointee
+                let id = asbd?.mFormatID ?? 0
+                let name: String = switch id {
+                case kAudioFormatMPEG4AAC, kAudioFormatMPEG4AAC_HE, kAudioFormatMPEG4AAC_HE_V2: "AAC"
+                case kAudioFormatAC3: "AC-3"
+                case kAudioFormatEnhancedAC3: "E-AC-3"
+                case kAudioFormatAppleLossless: "ALAC"
+                case kAudioFormatFLAC: "FLAC"
+                case kAudioFormatOpus: "Opus"
+                case kAudioFormatMPEGLayer3: "MP3"
+                case kAudioFormatLinearPCM: "PCM"
+                default: id.fourCCString
+                }
+                let ch = Int(asbd?.mChannelsPerFrame ?? 0)
+                self.audioDecoding = ("\(name) " + (ch == 6 ? "5.1" : ch == 8 ? "7.1" : ch == 2 ? "stereo" : ch == 1 ? "mono" : "\(ch) ch"), "Core Audio (AudioToolbox)")
+            }
             await self.loadAudioOptionsAndChapters(asset: asset, item: item)
             await self.buildMediaInfo(asset: asset, url: url)
             if let g = try? await asset.loadMediaSelectionGroup(for: .legible) { item.select(nil, in: g) }
+            // HLS (YouTube live, Twitch): the asset has no tracks to read the size from; the item reports it once
+            // playing, and it can change as the stream switches quality.
+            self.observers.append(item.observe(\.presentationSize, options: [.new]) { [weak self] item, _ in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    let sz = item.presentationSize
+                    guard sz.width > 0, sz.height > 0, abs(sz.width - self._naturalSize.width) > 1 || abs(sz.height - self._naturalSize.height) > 1 else { return }
+                    self._naturalSize = sz
+                    self.onEvent?(.videoSizeChanged)
+                }
+            })
             self.observers.append(item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
                 DispatchQueue.main.async {
                     guard let self else { return }
@@ -138,7 +174,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     private var _mediaInfo = MediaInfo()
     var mediaInfo: MediaInfo { _mediaInfo }
 
-    @MainActor private func buildMediaInfo(asset: AVURLAsset, url: URL) async {
+    @MainActor private func buildMediaInfo(asset: AVAsset, url: URL) async {
         var m = MediaInfo()
         m.engine = kind == .avplayerExt ? "AVFoundation (AVPlayer) + Media Extensions" : "AVFoundation (AVPlayer, QuickTime engine)"
         let tracks = (try? await asset.load(.tracks)) ?? []
@@ -186,7 +222,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         m.file = [(url.isFileURL ? "Path" : "URL", InfoFormat.safeURL(url))]
         if size > 0 { m.file.append(("Size", InfoFormat.bytes(size))) }
         m.file.append(("Container", url.pathExtension.uppercased()))
-        if let ext = asset.mediaExtensionProperties {
+        if let ext = (asset as? AVURLAsset)?.mediaExtensionProperties {
             m.file.append(("Format reader", "\(ext.extensionName) (\(ext.containingBundleName)) — Media Extension"))
         } else {
             m.file.append(("Format reader", "AVFoundation built-in"))
@@ -296,12 +332,13 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     private(set) var isHDRVideo = false
     private(set) var hdrFormat: String?
     private(set) var videoDecoding: VideoDecodingInfo?
+    private(set) var audioDecoding: (codec: String, decoder: String)?
     private(set) var audioTracks: [AudioTrackInfo] = []
     private(set) var selectedAudioTrack: Int?
     private(set) var chapters: [ChapterInfo] = []
     private var audioGroup: AVMediaSelectionGroup?
 
-    @MainActor private func loadAudioOptionsAndChapters(asset: AVURLAsset, item: AVPlayerItem) async {
+    @MainActor private func loadAudioOptionsAndChapters(asset: AVAsset, item: AVPlayerItem) async {
         if let g = try? await asset.loadMediaSelectionGroup(for: .audible) {
             audioGroup = g
             let selected = item.currentMediaSelection.selectedMediaOption(in: g)
@@ -358,7 +395,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
 
     func diagnostics() -> [String: String] {
         var d: [String: String] = [:]
-        if let ext = asset?.mediaExtensionProperties { d["mediaExtension"] = ext.extensionIdentifier }
+        if let ext = (asset as? AVURLAsset)?.mediaExtensionProperties { d["mediaExtension"] = ext.extensionIdentifier }
         if let tracks = player.currentItem?.tracks {
             for t in tracks {
                 guard let at = t.assetTrack, let fd = at.formatDescriptions.first else { continue }

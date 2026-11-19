@@ -6,6 +6,7 @@ MKVReader/CMExtensionBroker for engine B). Memory = phys_footprint (what Activit
 usage: Bench/run_bench.py [--seconds 40] [--only C,D] [--media name,...]
 Remote clip URL is read from $LP_REMOTE_URL or Bench/.remote_url (kept out of the repo).
 """
+import os
 import json, os, re, subprocess, sys, threading, time, argparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,8 +26,8 @@ CASES = [
     ("1080p H.264 MP4", os.path.join(MEDIA, "h264_1080p.mp4"), "ACD"),
     ("4K HDR HEVC MP4", os.path.join(MEDIA, "hevc4k_hdr.mp4"), "ACD"),
     ("4K HDR HEVC MKV", os.path.join(MEDIA, "hevc4k_hdr.mkv"), "BCD"),
-    ("4K Remux MKV (DTS-HD, PGS) 9 GB", "/path/to/4k-hdr10-remux.mkv", "BCD"),
-    ("1080p H.264 MP4 4.5 h 15 GB", "/path/to/twitch-vod.mp4", "ACD"),
+    ("4K Remux MKV (DTS-HD, PGS) 9 GB", os.environ.get("BENCH_MKV", ""), "BCD"),
+    ("1080p H.264 MP4 4.5 h 15 GB", os.environ.get("BENCH_MP4", ""), "ACD"),
     ("Remote HTTPS 1080p MKV", "REMOTE", "BCD"),
     ("VP9 WebM", os.path.join(MEDIA, "vp9_1080p.webm"), "BCD"),
     ("AV1 MKV (sw on M2)", os.path.join(MEDIA, "av1_1080p.mkv"), "BCD"),

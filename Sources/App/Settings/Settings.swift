@@ -143,8 +143,16 @@ final class Settings: ObservableObject {
     /// Which player the colour sliders currently belong to.
     weak var colorOwner: AnyObject?
 
+    /// "Don't crop this video" (title-bar Crop tag): never auto-crop this file.
+    func cropDisabled(for key: String) -> Bool { (d.dictionary(forKey: "crops")?[key] as? String) == "off" }
+    func setCropDisabled(_ off: Bool, for key: String) {
+        var dict = d.dictionary(forKey: "crops") ?? [:]
+        dict[key] = off ? "off" : nil
+        d.set(dict, forKey: "crops")
+    }
+
     func rememberedCrop(for key: String) -> CGRect?? {
-        guard let v = d.dictionary(forKey: "crops")?[key] as? String else { return nil }
+        guard let v = d.dictionary(forKey: "crops")?[key] as? String, v != "off" else { return nil }
         return .some(v == "none" ? nil : NSRectFromString(v))
     }
 

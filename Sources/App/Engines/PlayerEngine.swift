@@ -88,6 +88,8 @@ protocol PlayerEngine: AnyObject {
     var isHDRVideo: Bool { get }
     /// How the video is decoded (nil until known / no video): hardware = VideoToolbox media engine.
     var videoDecoding: VideoDecodingInfo? { get }
+    /// How the audio is decoded: (codec, decoder).
+    var audioDecoding: (codec: String, decoder: String)? { get }
     /// "Dolby Vision", "HDR10", "HLG" (nil for SDR).
     var hdrFormat: String? { get }
 }
@@ -106,6 +108,7 @@ extension PlayerEngine {
     func setHDR(_ on: Bool) {}
     var isHDRVideo: Bool { false }
     var videoDecoding: VideoDecodingInfo? { nil }
+    var audioDecoding: (codec: String, decoder: String)? { nil }
     var hdrFormat: String? { nil }
     func scrub(to seconds: Double, forward: Bool) { seek(to: seconds, accurate: false) }
     var buffering: (progress: Double, bytesPerSecond: Double)? { nil }
@@ -122,6 +125,8 @@ enum EngineEvent {
     case firstFrame
     case failed(String)
     case ended
+    /// The video size became known or changed (HLS streams report it only once playing).
+    case videoSizeChanged
     /// The engine can't decode this file's codecs; the player should reopen it with engine C.
     case needsFallback
 }

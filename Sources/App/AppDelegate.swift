@@ -34,7 +34,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openURLs(urls)
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
+    // Like IINA: closing the last video leaves the app running with no window; the Dock icon brings back the
+    // Welcome window.
+    func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { showWelcome(nil) }
+        return true
+    }
 
     // MARK: Welcome window & history
 
@@ -66,17 +72,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         p.onClose = { [weak self] c in
             guard let self else { return }
             self.players.removeAll { $0 === c }
-            // Last player closed: back to the start window instead of quitting (like IINA).
-            if self.players.isEmpty { DispatchQueue.main.async { self.showWelcome(nil) } }
         }
         players.append(p)
         return p
     }
 
-    /// Reuse the frontmost empty/idle window, otherwise the key player.
+    /// Where to open a video: an empty player window if there is one, otherwise a new window (several videos can
+    /// play at once, like IINA). New windows are offset from the front one.
     private func targetPlayer() -> PlayerWindowController {
-        if let key = players.first(where: { $0.window?.isKeyWindow == true }) { return key }
-        return players.first ?? newPlayer()
+        if let empty = players.first(where: { $0.currentURL == nil }) { return empty }
+        let front = players.first { $0.window?.isKeyWindow == true } ?? players.last
+        let p = newPlayer()
+        if let f = front?.window?.frame, let w = p.window {
+            w.setFrameTopLeftPoint(NSPoint(x: f.minX + 28, y: f.maxY - 28))
+        }
+        return p
     }
 
     func openURLs(_ urls: [URL]) {
@@ -188,6 +198,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = NSMenu(title: "View")
         view.addItem(item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
         view.addItem(.separator())
+        view.addItem(item("Crop Black Bars   ( C )", #selector(PlayerWindowController.toggleAutoCrop(_:))))
+        view.addItem(.separator())
         view.addItem(item("Half Size", #selector(PlayerWindowController.halfSize(_:)), "0"))
         view.addItem(item("Normal Size", #selector(PlayerWindowController.normalSize(_:)), "1"))
         view.addItem(item("Double Size", #selector(PlayerWindowController.doubleSize(_:)), "2"))
@@ -234,6 +246,13 @@ struct VideoAdjustView: View {
     @ObservedObject var settings: Settings
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $settings.autoCrop) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Crop black bars")
+                    Text("Removes letterbox / pillarbox bars automatically (C)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
             Toggle(isOn: $settings.hdrEnabled) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("HDR")

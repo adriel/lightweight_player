@@ -95,30 +95,53 @@ extension BlackBarDetector {
     }
 }
 
-/// Accumulates samples over time and decides on a stable crop: the *least* crop among the samples (so a dark
-/// scene can never cut into the picture), ignoring a single outlier once there are 3+ samples (so one odd frame
-/// can't undo a crop the others agree on).
+/// Accumulates samples over a video and decides on a stable crop.
+///
+/// Samples are grouped into shapes (content rects within 1%). A shape counts once it's *confirmed* — seen twice —
+/// so one odd frame can't change anything. The crop is the union of all confirmed shapes (the least crop that keeps
+/// every confirmed picture area), so it only ever grows when more picture shows up later: e.g. a film that opens with
+/// a small framed "home video" picture and is letterboxed afterwards ends up with the letterbox crop.
+/// A windowbox (bars on all four sides) is a typical intro/title effect rather than the master's frame, so it needs
+/// three samples spread over at least 45 s of playback before it counts.
 struct CropDecider {
-    private(set) var samples: [CGRect] = []
-    var validSamples: Int { samples.count }
+    private struct Shape { var rect: CGRect; var times: [Double]; var seeded = false }
+    private var shapes: [Shape] = []
+    private(set) var validSamples = 0
 
-    mutating func add(_ r: CGRect) { samples.append(r) }
+    private static func same(_ a: CGRect, _ b: CGRect) -> Bool {
+        abs(a.minX - b.minX) < 0.01 && abs(a.minY - b.minY) < 0.01 && abs(a.width - b.width) < 0.01 && abs(a.height - b.height) < 0.01
+    }
+    private static func isWindowbox(_ r: CGRect) -> Bool { r.width < 0.95 && r.height < 0.95 }
 
-    /// Crop to apply (nil = none). Needs two agreeing samples; tiny crops (< 2%) are ignored.
+    private func confirmed(_ s: Shape) -> Bool {
+        if s.seeded { return true }
+        guard s.times.count >= 2 else { return false }
+        if Self.isWindowbox(s.rect) { return s.times.count >= 3 && (s.times.max()! - s.times.min()!) >= 45 }
+        return true
+    }
+
+    /// Start from a remembered crop (treated as confirmed); later samples can still widen it.
+    mutating func seed(_ r: CGRect) { shapes.append(Shape(rect: r, times: [], seeded: true)) }
+
+    /// Adds a sample; returns true if it's a shape not seen before (worth a quick confirmation sample).
+    @discardableResult
+    mutating func add(_ r: CGRect, at time: Double) -> Bool {
+        validSamples += 1
+        if let i = shapes.firstIndex(where: { Self.same($0.rect, r) }) { shapes[i].times.append(time); return false }
+        shapes.append(Shape(rect: r, times: [time]))
+        return true                                   // new shape: confirm it with a quick follow-up sample
+    }
+
+    /// Crop to apply (nil = none).
     var decision: CGRect? {
-        guard samples.count >= 2 else { return nil }
-        var pool = samples.sorted { $0.width * $0.height > $1.width * $1.height }   // least crop first
-        if pool.count >= 3 {
-            let a = pool[0], b = pool[1]
-            let agree = abs(a.width - b.width) < 0.01 && abs(a.height - b.height) < 0.01
-            if !agree { pool.removeFirst() }    // lone outlier
-        }
-        let u = pool.dropFirst().reduce(pool[0]) { $0.union($1) }
+        let ok = shapes.filter(confirmed)
+        guard let first = ok.first else { return nil }
+        let u = ok.dropFirst().reduce(first.rect) { $0.union($1.rect) }
         if u.width > 0.98 && u.height > 0.98 { return nil }
         return u
     }
 
-    mutating func reset() { samples.removeAll() }
+    mutating func reset() { shapes.removeAll(); validSamples = 0 }
 }
 
 enum VideoGeometry {
