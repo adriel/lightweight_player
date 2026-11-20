@@ -236,10 +236,26 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         _mediaInfo = m
     }
 
-    /// Attaches a video output only for the moment we need one frame (an attached output makes AVPlayer keep
-    /// extra decoded frames around, so it's never left on).
+    /// One frame for black-bar detection.
+    /// Local files: decoded by a separate image generator, so the playing item is never touched — attaching a
+    /// video output to an item that has a video composition (HDR off) makes AVFoundation briefly show
+    /// unconverted, brighter frames (a visible flash every time auto-crop samples).
+    /// Streams (HLS): attach an output only for the moment we need one frame (an attached output makes AVPlayer
+    /// keep extra decoded frames around, so it's never left on).
     func snapshotFrame(_ completion: @escaping (CVPixelBuffer?) -> Void) {
         guard let item = player.currentItem else { completion(nil); return }
+        if let url = (asset as? AVURLAsset)?.url, url.isFileURL {
+            let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            gen.appliesPreferredTrackTransform = true            // same orientation as on screen
+            gen.maximumSize = CGSize(width: 1280, height: 1280)  // the detector works on a small copy anyway
+            let tolerance = CMTime(seconds: 0.5, preferredTimescale: 600)
+            gen.requestedTimeToleranceBefore = tolerance; gen.requestedTimeToleranceAfter = tolerance
+            gen.generateCGImageAsynchronously(for: item.currentTime()) { cg, _, _ in
+                let pb = cg.flatMap(Self.pixelBuffer(from:))
+                DispatchQueue.main.async { _ = gen; completion(pb) }
+            }
+            return
+        }
         let out = AVPlayerItemVideoOutput(pixelBufferAttributes: nil)
         item.add(out)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -248,6 +264,20 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
             item.remove(out)
             completion(pb)
         }
+    }
+
+    /// BGRA pixel buffer (IOSurface-backed, so the detector's GPU downscale can read it) holding the image.
+    private static func pixelBuffer(from cg: CGImage) -> CVPixelBuffer? {
+        var pb: CVPixelBuffer?
+        let attrs: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary, kCVPixelBufferCGImageCompatibilityKey: true,
+                                      kCVPixelBufferCGBitmapContextCompatibilityKey: true]
+        guard CVPixelBufferCreate(nil, cg.width, cg.height, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &pb) == kCVReturnSuccess, let pb else { return nil }
+        CVPixelBufferLockBaseAddress(pb, []); defer { CVPixelBufferUnlockBaseAddress(pb, []) }
+        guard let ctx = CGContext(data: CVPixelBufferGetBaseAddress(pb), width: cg.width, height: cg.height, bitsPerComponent: 8,
+                                  bytesPerRow: CVPixelBufferGetBytesPerRow(pb), space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        return pb
     }
 
     func statusRows() -> [MediaInfo.Row] {
