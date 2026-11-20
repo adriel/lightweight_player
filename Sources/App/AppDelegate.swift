@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.mainMenu = buildMenu()
+        // Stream caches left behind by a crash, a force quit or an older build.
+        let streams = Settings.shared.cacheDirectory
+        DispatchQueue.global(qos: .utility).async { CachedHTTPSource.removeLeftovers(in: streams) }
         // Launch with a path argument (e.g. `open -a LightPlayer file.mkv` goes through application(_:open:)).
         let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
         if let a = args.first { openURLs([a.contains("://") ? URL(string: a)! : URL(fileURLWithPath: a)]) }

@@ -116,9 +116,10 @@ final class SampleBufferEngine: PlayerEngine {
                     let s = try CachedHTTPSource(url: url, cacheDirectory: st.cacheDirectory)
                     s.timeout = st.networkTimeout
                     s.maxDiskBytes = Int64(st.maxCacheGB * 1_073_741_824)
+                    // Reachable before the (blocking) open, so close() can cancel it and release its cache.
+                    source = s
                     try s.open()
                     src = s
-                    source = s
                     // Streams: our buffering monitor decides when there's enough data; AVFoundation's own guard
                     // can wait forever on a separate audio input with only a couple of seconds queued.
                     synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
@@ -134,10 +135,11 @@ final class SampleBufferEngine: PlayerEngine {
                     let st = Settings.shared
                     let s = try CachedHTTPSource(url: au, cacheDirectory: st.cacheDirectory)
                     s.timeout = st.networkTimeout
+                    s.maxDiskBytes = Int64(st.maxCacheGB * 1_073_741_824)
+                    audioSourceHTTP = s
                     try s.open()
                     let ad = try FFDemuxer(url: au.absoluteString, source: s)
                     if ad.duration > 0 { s.readAheadBytes = Int64(Double(s.length) / ad.duration * st.bufferMinutes * 60) }
-                    audioSourceHTTP = s
                     audioDemuxer = ad
                 }
                 _naturalSize = d.naturalSize
@@ -504,8 +506,17 @@ final class SampleBufferEngine: PlayerEngine {
             audioRenderer.flush()
             freePending()
             demuxer = nil
+            audioDemuxer = nil
         }
+        // An open() that was still running has finished now (same serial queue): close whatever it created too.
+        source?.close()
+        audioSourceHTTP?.close()
         observers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    deinit {
+        source?.close()
+        audioSourceHTTP?.close()
     }
 
     func diagnostics() -> [String: String] {

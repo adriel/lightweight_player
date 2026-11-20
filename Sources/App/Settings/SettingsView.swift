@@ -144,7 +144,7 @@ private struct StreamingTab: View {
                 Stepper(value: $s.maxCacheGB, in: 1...200, step: 1) { LabeledContent("Max disk cache per stream", value: "\(Int(s.maxCacheGB)) GB") }
                 Stepper(value: $s.networkTimeout, in: 5...120, step: 5) { LabeledContent("Network timeout", value: "\(Int(s.networkTimeout)) s") }
             } footer: {
-                Text("Streams are buffered to a temporary file on disk, not RAM. The buffer size is estimated from the file's average bitrate; already-downloaded parts are kept so seeking back is instant. Applies to the next stream you open.")
+                Text("Streams are buffered to a temporary file on disk, not RAM. The buffer size is estimated from the file's average bitrate; already-downloaded parts are kept so seeking back is instant, up to the per-stream cap. The file is deleted as soon as the video closes. Applies to the next stream you open.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Cache") {
@@ -162,7 +162,8 @@ private struct StreamingTab: View {
     private func refresh() {
         let files = (try? FileManager.default.contentsOfDirectory(at: s.cacheDirectory, includingPropertiesForKeys: [.totalFileAllocatedSizeKey])) ?? []
         let bytes = files.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0) }
-        cacheSize = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        // Open streams' files are unlinked, so they don't show up in the listing.
+        cacheSize = ByteCountFormatter.string(fromByteCount: Int64(bytes) + CachedHTTPSource.liveDiskBytes, countStyle: .file)
     }
 }
 

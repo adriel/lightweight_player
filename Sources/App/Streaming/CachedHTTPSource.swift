@@ -8,12 +8,13 @@ import Foundation
 /// - Seeking outside the downloaded ranges restarts the download at the new position; ranges already
 ///   on disk are kept, so seeking back is instant.
 /// - RAM use is constant (one small chunk in flight); the buffer lives in the file system cache/disk.
+/// - The cache file is unlinked as soon as it's opened: only our descriptor keeps it alive, so its disk
+///   space is returned the moment the source closes — or the process exits, even on a crash or force quit.
 final class CachedHTTPSource: @unchecked Sendable {
     struct Stats { var length: Int64; var cachedBytes: Int64; var aheadBytes: Int64; var downloading: Bool; var bytesPerSecond: Double }
 
     let url: URL
     private let authorization: String?
-    private let fileURL: URL
     private let fd: Int32
     private let cond = NSCondition()
     private var ranges = ByteRanges()
@@ -35,11 +36,38 @@ final class CachedHTTPSource: @unchecked Sendable {
     private var rateWindow: [(Date, Int)] = []
 
     /// Bytes to keep buffered ahead of the read position. Updated by the engine once the bitrate is known.
-    var readAheadBytes: Int64 { get { cond.withLock { _readAhead } } set { cond.withLock { _readAhead = max(newValue, 4 << 20) }; resumeIfNeeded() } }
+    /// Capped at 3/4 of `maxDiskBytes`, so the read-ahead always fits under the disk cap.
+    var readAheadBytes: Int64 {
+        get { cond.withLock { _readAhead } }
+        set { cond.withLock { _readAhead = max(min(newValue, _maxDisk * 3 / 4), 4 << 20) }; resumeIfNeeded() }
+    }
     private var _readAhead: Int64 = 64 << 20
-    /// Upper bound on disk used by this stream; old data far behind the playhead is evicted past it.
-    var maxDiskBytes: Int64 = 8 << 30
+    /// Upper bound on disk used by this stream; data furthest from the playhead is evicted past it.
+    var maxDiskBytes: Int64 {
+        get { cond.withLock { _maxDisk } }
+        set { cond.withLock { _maxDisk = max(newValue, 64 << 20); _readAhead = min(_readAhead, _maxDisk * 3 / 4) } }
+    }
+    private var _maxDisk: Int64 = 8 << 30
     var timeout: TimeInterval = 30
+
+    /// Open sources, for reporting disk use (their files are unlinked, so a directory listing can't see them).
+    private static let live = NSHashTable<CachedHTTPSource>.weakObjects()
+    private static let liveLock = NSLock()
+    /// Disk currently held by open stream caches in this process.
+    static var liveDiskBytes: Int64 {
+        liveLock.withLock { live.allObjects }.reduce(0) { $0 + $1.stats.cachedBytes }
+    }
+
+    /// Deletes `stream-*.cache` files in `directory`. Files of open sources are unlinked at creation, so anything
+    /// still listed is a leftover (from a crash, a force quit or an older build); deleting a file another process
+    /// still has open only unlinks it, which doesn't disturb that process.
+    static func removeLeftovers(in directory: URL) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: directory.path) else { return }
+        for n in names where n.hasPrefix("stream-") && n.hasSuffix(".cache") {
+            try? fm.removeItem(at: directory.appendingPathComponent(n))
+        }
+    }
 
     init(url: URL, cacheDirectory: URL) throws {
         // Credentials embedded in the URL become a Basic auth header (URLSession won't send them preemptively).
@@ -51,9 +79,11 @@ final class CachedHTTPSource: @unchecked Sendable {
         } else { authorization = nil }
         self.url = comps.url!
         try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-        fileURL = cacheDirectory.appendingPathComponent("stream-\(UUID().uuidString).cache")
+        let fileURL = cacheDirectory.appendingPathComponent("stream-\(UUID().uuidString).cache")
         fd = Darwin.open(fileURL.path, O_RDWR | O_CREAT | O_TRUNC, 0o600)
         guard fd >= 0 else { throw POSIXError(.EIO) }
+        // Anonymous from here on: nothing to clean up by name, and the kernel frees it when the fd goes away.
+        unlink(fileURL.path)
         // Don't let the page cache treat this as precious; we re-read it once.
         _ = fcntl(fd, F_NOCACHE, 0)
         delegateQueue.maxConcurrentOperationCount = 1
@@ -63,6 +93,7 @@ final class CachedHTTPSource: @unchecked Sendable {
         cfg.timeoutIntervalForRequest = 30
         cfg.httpMaximumConnectionsPerHost = 2
         session = URLSession(configuration: cfg, delegate: SessionDelegate(owner: self), delegateQueue: delegateQueue)
+        Self.liveLock.withLock { Self.live.add(self) }
     }
 
     deinit { close() }
@@ -89,8 +120,11 @@ final class CachedHTTPSource: @unchecked Sendable {
         cond.broadcast()
         cond.unlock()
         session?.invalidateAndCancel()
-        Darwin.close(fd)
-        try? FileManager.default.removeItem(at: fileURL)
+        // The file is already unlinked: closing the last descriptor releases its disk space.
+        cond.withLock {
+            ranges = ByteRanges()
+            Darwin.close(fd)
+        }
     }
 
     /// Blocking read. Returns bytes read, 0 at EOF, -1 on error/close.
@@ -169,17 +203,32 @@ final class CachedHTTPSource: @unchecked Sendable {
     private func resumeIfNeeded() { cond.withLock { resumeLocked() } }
 
     private func evictIfNeeded() {
-        guard ranges.total > maxDiskBytes else { return }
-        // Drop the spans furthest behind the playhead first (keep 64 MB of history).
-        let keepFrom = max(0, readPos - (64 << 20))
-        for span in ranges.spans where span.upperBound <= keepFrom {
-            punchHole(span.lowerBound, span.upperBound)
-            ranges.remove(span)
-            if ranges.total <= maxDiskBytes * 8 / 10 { break }
+        guard ranges.total > _maxDisk else { return }
+        let target = _maxDisk * 8 / 10
+        // 1. Data behind the playhead, oldest first (keep 64 MB of history, less under a small cap). This includes
+        //    the start of the span being played, so a stream watched straight through stays under the cap.
+        let keepFrom = max(0, readPos - min(64 << 20, _maxDisk / 8))
+        for span in ranges.spans where span.lowerBound < keepFrom {
+            let excess = ranges.total - target
+            guard excess > 0 else { return }
+            drop(span.lowerBound..<min(span.upperBound, keepFrom, span.lowerBound + excess))
+        }
+        // 2. Spans ahead that the reader isn't on (left over from earlier seeks), furthest first.
+        let liveEnd = readPos + ranges.contiguous(from: readPos)
+        for span in ranges.spans.reversed() where span.lowerBound > liveEnd {
+            guard ranges.total > target else { return }
+            drop(span)
         }
     }
 
-    private func punchHole(_ start: Int64, _ end: Int64) {
+    /// Forgets `r` and gives its blocks back to the file system.
+    private func drop(_ r: Range<Int64>) {
+        ranges.subtract(r)
+        // F_PUNCHHOLE needs block-aligned bounds (EINVAL otherwise); align inward to 1 MB, which covers any
+        // block size. The partial edges stay on disk but are no longer counted as cached, so they're re-fetched.
+        let align: Int64 = 1 << 20
+        let start = (r.lowerBound + align - 1) / align * align, end = r.upperBound / align * align
+        guard end > start else { return }
         var args = fpunchhole_t(fp_flags: 0, reserved: 0, fp_offset: off_t(start), fp_length: off_t(end - start))
         _ = fcntl(fd, F_PUNCHHOLE, &args)
     }
@@ -273,7 +322,17 @@ struct ByteRanges {
         spans = out
     }
 
-    mutating func remove(_ r: Range<Int64>) { spans.removeAll { $0 == r } }
+    /// Removes every byte in `r`, splitting spans that straddle its ends.
+    mutating func subtract(_ r: Range<Int64>) {
+        guard !r.isEmpty else { return }
+        var out: [Range<Int64>] = []
+        for s in spans {
+            if s.upperBound <= r.lowerBound || s.lowerBound >= r.upperBound { out.append(s); continue }
+            if s.lowerBound < r.lowerBound { out.append(s.lowerBound..<r.lowerBound) }
+            if s.upperBound > r.upperBound { out.append(r.upperBound..<s.upperBound) }
+        }
+        spans = out
+    }
 
     /// Bytes available contiguously starting at `offset` (0 if `offset` isn't cached).
     func contiguous(from offset: Int64) -> Int64 {
