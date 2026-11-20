@@ -8,13 +8,14 @@ import VideoToolbox
 /// In the app this is used for local MP4/MOV/M4V, where AVFoundation's own demuxer is the leanest.
 final class AVPlayerEngine: NSObject, PlayerEngine {
     let kind: EngineKind
-    private let player = AVPlayer()
+    private var player = AVPlayer()                 // replaced when an HDR switch hands over to a new player
     private let playerLayer: AVPlayerLayer
     let view: NSView
     var onEvent: ((EngineEvent) -> Void)?
     private(set) var warnings: [EngineWarning] = []
     let cues = CueStore()
     private var observers: [NSKeyValueObservation] = []
+    private var itemObservers: [NSKeyValueObservation] = []
     private var endObserver: Any?
     private var asset: AVAsset?
     private var subtitleAssetTracks: [Int32: AVAssetTrack] = [:]
@@ -138,38 +139,45 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
             await self.loadAudioOptionsAndChapters(asset: asset, item: item)
             await self.buildMediaInfo(asset: asset, url: url)
             if let g = try? await asset.loadMediaSelectionGroup(for: .legible) { item.select(nil, in: g) }
-            // HLS (YouTube live, Twitch): the asset has no tracks to read the size from; the item reports it once
-            // playing, and it can change as the stream switches quality.
-            self.observers.append(item.observe(\.presentationSize, options: [.new]) { [weak self] item, _ in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    let sz = item.presentationSize
-                    guard sz.width > 0, sz.height > 0, abs(sz.width - self._naturalSize.width) > 1 || abs(sz.height - self._naturalSize.height) > 1 else { return }
-                    self._naturalSize = sz
-                    self.onEvent?(.videoSizeChanged)
-                }
-            })
-            self.observers.append(item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    switch item.status {
-                    case .readyToPlay: if !self.readySent { self.readySent = true; self.onEvent?(.ready) }
-                    case .failed:
-                        // Media Extension missing/disabled/failed: let the built-in engine take over.
-                        if self.kind == .avplayerExt { self.onEvent?(.needsFallback) }
-                        else { self.onEvent?(.failed(item.error?.localizedDescription ?? "unknown error")) }
-                    default: break
-                    }
-                }
-            })
+            self.observeItem(item)
         }
         observers.append(playerLayer.observe(\.isReadyForDisplay, options: [.new]) { [weak self] layer, _ in
-            if layer.isReadyForDisplay { DispatchQueue.main.async { self?.onEvent?(.firstFrame) } }
+            if layer.isReadyForDisplay { DispatchQueue.main.async { if self?.handover == nil { self?.onEvent?(.firstFrame) } } }
+        })
+        player.replaceCurrentItem(with: item)
+    }
+
+    /// Size / status / end-of-file observers for the playing item (re-attached when a new player takes over).
+    private func observeItem(_ item: AVPlayerItem) {
+        itemObservers.removeAll()
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        // HLS (YouTube live, Twitch): the asset has no tracks to read the size from; the item reports it once
+        // playing, and it can change as the stream switches quality.
+        itemObservers.append(item.observe(\.presentationSize, options: [.new]) { [weak self] item, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let sz = item.presentationSize
+                guard sz.width > 0, sz.height > 0, abs(sz.width - self._naturalSize.width) > 1 || abs(sz.height - self._naturalSize.height) > 1 else { return }
+                self._naturalSize = sz
+                self.onEvent?(.videoSizeChanged)
+            }
+        })
+        itemObservers.append(item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch item.status {
+                case .readyToPlay: if !self.readySent { self.readySent = true; self.onEvent?(.ready) }
+                case .failed:
+                    // Media Extension missing/disabled/failed: let the built-in engine take over.
+                    if self.kind == .avplayerExt { self.onEvent?(.needsFallback) }
+                    else { self.onEvent?(.failed(item.error?.localizedDescription ?? "unknown error")) }
+                default: break
+                }
+            }
         })
         endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main) { [weak self] _ in
             self?.onEvent?(.ended)
         }
-        player.replaceCurrentItem(with: item)
     }
     private var readySent = false
     private var _mediaInfo = MediaInfo()
@@ -326,9 +334,10 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     }
 
     func play() { player.play() }
-    func pause() { player.pause() }
+    func pause() { endHandover(); player.pause() }
 
     func seek(to seconds: Double, accurate: Bool) {
+        endHandover()
         let t = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         if accurate {
             player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -354,9 +363,10 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     }
 
     func close() {
+        endHandover(); removeCover()
         player.pause()
         player.replaceCurrentItem(with: nil)
-        observers.removeAll()
+        observers.removeAll(); itemObservers.removeAll()
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
     }
 
@@ -406,18 +416,21 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         player.currentItem?.step(byCount: forward ? 1 : -1)
     }
 
-    /// HDR off: render through a video composition whose output is BT.709 SDR (AVFoundation tone-maps).
+    /// HDR off renders through a video composition whose output is BT.709 SDR (AVFoundation tone-maps).
     ///
-    /// Swapping the composition in while playing makes AVFoundation rebuild its pipeline: a few frames stall,
-    /// then ~3 frames show unconverted (about twice as bright) — a visible flash. So when switching to SDR
-    /// mid-playback, the picture is covered for that moment with an SDR still of the current frame (decoded by
-    /// a separate image generator), which fades out once the converted frames are flowing. The composition is
-    /// built ahead of time so the switch doesn't wait ~1 s for it. (Switching back to HDR has no flash.)
+    /// Changing a playing item's composition makes AVPlayer rebuild its pipeline: a few frames stall and ~3 come
+    /// out unconverted (a bright flash). While playing, the switch is handed over to a second, muted player: it
+    /// opens the same file with the new setting, prerolls ~0.5 s ahead and starts on the main player's clock at
+    /// exactly that moment, so its picture matches frame for frame. It's shown on top while the main item changes
+    /// underneath, then removed once that has settled — no seek, no still, the sound is never touched.
+    /// Paused (or a stream): an SDR still covers a seek instead; nothing is moving, so there's nothing to hide.
     private var sdrComposition = false
     private var preparedSDR: AVVideoComposition?
     private var cover: NSView?
+    private var handover: Handover?
+    private var switchGeneration = 0
 
-    private func sdrVideoComposition() async -> AVVideoComposition? {
+    @MainActor private func sdrVideoComposition() async -> AVVideoComposition? {
         if let preparedSDR { return preparedSDR }
         guard let asset, let c = try? await AVMutableVideoComposition.videoComposition(withPropertiesOf: asset) else { return nil }
         c.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
@@ -430,29 +443,120 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     func setHDR(_ on: Bool) {
         guard asset != nil, let item = player.currentItem, sdrComposition == on else { return }
         sdrComposition = !on
+        switchGeneration += 1
+        let gen = switchGeneration
         Task { @MainActor [weak self] in
             guard let self, let asset = self.asset else { return }
             let hdrTracks = (try? await asset.loadTracks(withMediaCharacteristic: .containsHDRVideo)) ?? []
             if hdrTracks.isEmpty { return }
-            if on { self.removeCover(); item.videoComposition = nil; return }
-            guard let c = await self.sdrVideoComposition(), self.sdrComposition, self.player.currentItem === item else { return }
+            let target: AVVideoComposition? = on ? nil : await self.sdrVideoComposition()
+            guard on || target != nil, gen == self.switchGeneration, self.player.currentItem === item else { return }
+            if self.player.rate != 0, self.playerLayer.isReadyForDisplay, await self.handOver(to: target, item: item, gen: gen) { return }
+            guard gen == self.switchGeneration, self.player.currentItem === item else { return }
+            self.removeCover()
+            if on { item.videoComposition = nil; return }
+            // Paused or not a local file: cover with an SDR still, change, and seek in place so the new rendering
+            // shows straight away.
             let covered = await self.coverWithStill(item)
-            guard self.sdrComposition, self.player.currentItem === item else { self.removeCover(); return }
-            item.videoComposition = c
-            // AVPlayer would keep showing ~1 s of frames it already prepared, then glitch to the new pipeline.
-            // Seeking to where we are flushes them so SDR takes effect now; the still covers the seek.
+            guard gen == self.switchGeneration, self.player.currentItem === item else { self.removeCover(); return }
+            item.videoComposition = target
             guard covered else { return }
-            let t = item.currentTime()
-            self.player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            self.player.seek(to: item.currentTime(), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                 DispatchQueue.main.async { self?.removeCover(after: 0.12) }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.removeCover() }   // never stuck
         }
     }
 
+    /// Seamless switch while playing (see above). False if it couldn't be set up; the caller then switches the
+    /// plain way.
+    @MainActor private func handOver(to composition: AVVideoComposition?, item: AVPlayerItem, gen: Int) async -> Bool {
+        guard let asset, (asset as? AVURLAsset)?.url.isFileURL == true, let timebase = item.timebase else { return false }
+        endHandover()
+        let item2 = AVPlayerItem(asset: asset)
+        item2.videoComposition = composition
+        if let g = audioGroup, let o = item.currentMediaSelection.selectedMediaOption(in: g) { item2.select(o, in: g) }   // same audio track
+        if let g = try? await asset.loadMediaSelectionGroup(for: .legible) { item2.select(nil, in: g) }                  // we draw subtitles
+        let p2 = AVPlayer()
+        p2.appliesMediaSelectionCriteriaAutomatically = false
+        p2.automaticallyWaitsToMinimizeStalling = false     // required for setRate(_:time:atHostTime:)
+        p2.volume = player.volume
+        p2.isMuted = true
+        p2.replaceCurrentItem(with: item2)
+        let l2 = AVPlayerLayer(player: p2)
+        l2.videoGravity = playerLayer.videoGravity
+        l2.filters = playerLayer.filters                     // brightness / contrast / gamma
+        let v = NSView(frame: view.bounds)
+        v.wantsLayer = true
+        v.autoresizingMask = [.width, .height]
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        l2.frame = playerLayer.frame                         // same placement (black-bar crop)
+        v.layer?.addSublayer(l2)
+        CATransaction.commit()
+        v.isHidden = true
+        view.addSubview(v)
+        handover = Handover(player: p2, view: v)
+        func alive() -> Bool {
+            gen == switchGeneration && handover?.player === p2 && player.currentItem === item && player.rate != 0
+        }
+        // Ready (well under 0.1 s for a local file), positioned ~0.5 s ahead, prerolled.
+        for _ in 0..<100 where item2.status == .unknown { try? await Task.sleep(nanoseconds: 20_000_000) }
+        guard item2.status == .readyToPlay, alive() else { endHandover(p2); return false }
+        let rate = player.rate
+        let start = item.currentTime() + CMTime(seconds: 0.5 * Double(rate), preferredTimescale: 6000)
+        guard await p2.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero), alive() else { endHandover(p2); return false }
+        _ = await p2.preroll(atRate: rate)
+        guard alive() else { endHandover(p2); return false }
+        // Start it when the main player reaches `start`, on the same clock.
+        let host = CMSyncConvertTime(start, from: timebase, to: CMClockGetHostTimeClock())
+        let wait = (host - CMClockGetTime(CMClockGetHostTimeClock())).seconds
+        guard wait > 0.03 else { endHandover(p2); return false }
+        p2.setRate(rate, time: start, atHostTime: host)
+        try? await Task.sleep(nanoseconds: UInt64((wait + 0.05) * 1e9))
+        guard alive() else { endHandover(p2); return false }
+
+        // Both show the same frame now. The new player takes over: picture on top, sound, observers, and the
+        // main video layer underneath. The old player keeps running (muted, in step) until that layer shows
+        // the new player's frames, then it's closed. Its item is never changed, so nothing rewinds or stalls.
+        let old = player
+        v.isHidden = false
+        p2.isMuted = old.isMuted
+        old.isMuted = true
+        player = p2
+        handover?.adopted = true
+        observeItem(item2)
+        playerLayer.player = p2
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        old.pause()
+        old.replaceCurrentItem(with: nil)
+        endHandover(p2)
+        return true
+    }
+
+    private final class Handover {
+        let player: AVPlayer, view: NSView
+        var adopted = false                                  // the new player has become the engine's player
+        init(player: AVPlayer, view: NSView) { self.player = player; self.view = view }
+    }
+
+    /// Removes the handover overlay (only `p`'s when given). Not yet adopted: that player is closed too.
+    private func endHandover(_ p: AVPlayer? = nil) {
+        guard let h = handover, p == nil || h.player === p else { return }
+        handover = nil
+        h.view.removeFromSuperview()
+        (h.view.layer?.sublayers?.first as? AVPlayerLayer)?.player = nil
+        if h.adopted {
+            h.player.automaticallyWaitsToMinimizeStalling = true
+            h.player.preventsDisplaySleepDuringVideoPlayback = true
+        } else {
+            h.player.pause()
+            h.player.replaceCurrentItem(with: nil)
+        }
+    }
+
     /// Lays an SDR still of (about) the frame on screen over the video. False when there's nothing to cover
     /// (nothing shown yet, or not a local file).
-    private func coverWithStill(_ item: AVPlayerItem) async -> Bool {
+    @MainActor private func coverWithStill(_ item: AVPlayerItem) async -> Bool {
         guard playerLayer.isReadyForDisplay, let url = (asset as? AVURLAsset)?.url, url.isFileURL else { return false }
         let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
         gen.appliesPreferredTrackTransform = true
