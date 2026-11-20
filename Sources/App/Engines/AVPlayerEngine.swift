@@ -99,6 +99,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
             }
             self._subtitleTracks = subs
             self.isHDRVideo = !((try? await asset.loadTracks(withMediaCharacteristic: .containsHDRVideo)) ?? []).isEmpty
+            if self.isHDRVideo { _ = await self.sdrVideoComposition() }     // ready for an instant switch to SDR
             if let v = try? await asset.loadTracks(withMediaType: .video).first, let fd = (try? await v.load(.formatDescriptions))?.first {
                 let sub = CMFormatDescriptionGetMediaSubType(fd)
                 let tf = CMFormatDescriptionGetExtension(fd, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
@@ -406,20 +407,88 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     }
 
     /// HDR off: render through a video composition whose output is BT.709 SDR (AVFoundation tone-maps).
+    ///
+    /// Swapping the composition in while playing makes AVFoundation rebuild its pipeline: a few frames stall,
+    /// then ~3 frames show unconverted (about twice as bright) — a visible flash. So when switching to SDR
+    /// mid-playback, the picture is covered for that moment with an SDR still of the current frame (decoded by
+    /// a separate image generator), which fades out once the converted frames are flowing. The composition is
+    /// built ahead of time so the switch doesn't wait ~1 s for it. (Switching back to HDR has no flash.)
     private var sdrComposition = false
+    private var preparedSDR: AVVideoComposition?
+    private var cover: NSView?
+
+    private func sdrVideoComposition() async -> AVVideoComposition? {
+        if let preparedSDR { return preparedSDR }
+        guard let asset, let c = try? await AVMutableVideoComposition.videoComposition(withPropertiesOf: asset) else { return nil }
+        c.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+        c.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+        c.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+        preparedSDR = c
+        return c
+    }
+
     func setHDR(_ on: Bool) {
-        guard let asset, let item = player.currentItem, sdrComposition == on else { return }
+        guard asset != nil, let item = player.currentItem, sdrComposition == on else { return }
         sdrComposition = !on
         Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self, let asset = self.asset else { return }
             let hdrTracks = (try? await asset.loadTracks(withMediaCharacteristic: .containsHDRVideo)) ?? []
-            if on || hdrTracks.isEmpty { item.videoComposition = nil; return }
-            guard let c = try? await AVMutableVideoComposition.videoComposition(withPropertiesOf: asset) else { return }
-            c.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
-            c.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
-            c.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
-            if !self.sdrComposition { return }
+            if hdrTracks.isEmpty { return }
+            if on { self.removeCover(); item.videoComposition = nil; return }
+            guard let c = await self.sdrVideoComposition(), self.sdrComposition, self.player.currentItem === item else { return }
+            let covered = await self.coverWithStill(item)
+            guard self.sdrComposition, self.player.currentItem === item else { self.removeCover(); return }
             item.videoComposition = c
+            // AVPlayer would keep showing ~1 s of frames it already prepared, then glitch to the new pipeline.
+            // Seeking to where we are flushes them so SDR takes effect now; the still covers the seek.
+            guard covered else { return }
+            let t = item.currentTime()
+            self.player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                DispatchQueue.main.async { self?.removeCover(after: 0.12) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.removeCover() }   // never stuck
+        }
+    }
+
+    /// Lays an SDR still of (about) the frame on screen over the video. False when there's nothing to cover
+    /// (nothing shown yet, or not a local file).
+    private func coverWithStill(_ item: AVPlayerItem) async -> Bool {
+        guard playerLayer.isReadyForDisplay, let url = (asset as? AVURLAsset)?.url, url.isFileURL else { return false }
+        let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        gen.appliesPreferredTrackTransform = true
+        gen.dynamicRangePolicy = .forceSDR
+        let px = playerLayer.bounds.size, scale = playerLayer.contentsScale
+        gen.maximumSize = CGSize(width: px.width * scale, height: px.height * scale)
+        // Decoding takes a moment while the video keeps playing: ask for a frame slightly ahead.
+        let ahead = player.rate > 0 ? 0.2 * Double(player.rate) : 0
+        let t = item.currentTime() + CMTime(seconds: ahead, preferredTimescale: 600)
+        gen.requestedTimeToleranceBefore = CMTime(seconds: 0.05, preferredTimescale: 600)
+        gen.requestedTimeToleranceAfter = CMTime(seconds: 0.05, preferredTimescale: 600)
+        guard let image = try? await gen.image(at: t).image else { return false }
+        removeCover()
+        // Its own view on top of the video: a plain layer above the AVPlayerLayer isn't drawn over HDR video.
+        let v = NSView(frame: view.bounds)
+        v.wantsLayer = true
+        v.autoresizingMask = [.width, .height]
+        v.layer?.backgroundColor = NSColor.black.cgColor
+        // Same placement as the video (the player layer is enlarged and offset when black bars are cropped).
+        let l = CALayer()
+        l.contents = image
+        l.contentsGravity = .resizeAspect                  // same as the player layer's videoGravity
+        l.frame = playerLayer.frame
+        v.layer?.addSublayer(l)
+        view.addSubview(v)
+        cover = v
+        return true
+    }
+
+    private func removeCover(after delay: Double = 0) {
+        guard let v = cover else { return }
+        if delay == 0 { cover = nil; v.removeFromSuperview(); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.cover === v else { return }
+            self.cover = nil
+            NSAnimationContext.runAnimationGroup({ $0.duration = 0.15; v.animator().alphaValue = 0 }, completionHandler: { v.removeFromSuperview() })
         }
     }
 
