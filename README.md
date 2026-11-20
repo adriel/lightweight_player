@@ -2,8 +2,11 @@
 
 A low-RAM, hardware-accelerated video player for macOS 27+ on Apple silicon.
 
+![LightPlayer playing Big Buck Bunny](docs/player.png)
 
-<img src="docs/formats.png" width="460" alt="Formats settings page">
+<img src="docs/sidebar.png" width="520" alt="Settings sidebar with Video, Audio and Subtitles tabs"> <img src="docs/formats.png" width="300" alt="Formats settings page">
+
+<sub>Screenshots show [Big Buck Bunny](https://peach.blender.org/) (© 2008 Blender Foundation, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)), streamed from Blender's official YouTube upload.</sub>
 
 Press **⌘I** for the inspector: pipeline, decoder actually in use (VideoToolbox hardware / software, dav1d, FFmpeg audio, or a Media Extension), colour/HDR, tracks, file info and live status (buffer, disk cache, download speed, memory, CPU, display EDR headroom).
 
