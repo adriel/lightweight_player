@@ -12,6 +12,7 @@ final class SidebarModel: ObservableObject {
     @Published var selectedAudio: Int?
     @Published var subtitleTracks: [Track] = []
     @Published var selectedSubtitle: Int?
+    @Published var loop = false              // replay the video from the start when it ends
 
     var onPickAudio: ((Int) -> Void)?
     var onPickSubtitle: ((Int?) -> Void)?
@@ -69,9 +70,12 @@ struct SidebarView: View {
 
     private var videoTab: some View {
         VStack(alignment: .leading, spacing: 18) {
+            section("Playback") {
+                toggle("Loop", isOn: $model.loop, detail: "Plays this video again from the start when it ends (L)")
+            }
             section("Picture") {
                 toggle("Crop black bars", isOn: $settings.autoCrop, detail: "Removes letterbox / pillarbox bars automatically (C)")
-                toggle("HDR", isOn: $settings.hdrEnabled,
+                toggle("HDR", isOn: hdrBinding,
                        detail: settings.nowPlayingHDR == false ? "This video is SDR" :
                                settings.hdrEnabled ? "HDR video uses the display's extra brightness" : "HDR video is tone-mapped to SDR")
                     .disabled(settings.nowPlayingHDR == false)
@@ -87,6 +91,12 @@ struct SidebarView: View {
                 }
             }
         }
+    }
+
+    /// An SDR video has no HDR to show, so the switch reads off (and is disabled) whatever the saved preference is.
+    private var hdrBinding: Binding<Bool> {
+        Binding(get: { settings.nowPlayingHDR != false && settings.hdrEnabled },
+                set: { settings.hdrEnabled = $0 })
     }
 
     // MARK: Audio

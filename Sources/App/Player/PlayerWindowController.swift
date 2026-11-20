@@ -193,7 +193,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             sizeWindowToVideo()
             startCropDetection()
         case .ended:
+            if playerView.sidebar.model.loop, engine.duration > 0 {
+                engine.seek(to: 0, accurate: true)
+                engine.play()
+                return
+            }
             if let u = currentURL { settings.setResumePosition(nil, for: resumeKey(u)) }
+            // Stay on the last frame, paused (like IINA), so the controls come back and Space plays it again.
+            engine.pause()
+            playerView.controlBar.update(time: engine.duration, duration: engine.duration, playing: false, buffered: engine.bufferedFractions)
             showControls()
         }
     }
@@ -520,6 +528,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case "f": toggleFullScreen(); return true
         case "m": controlBarToggleMute(); return true
         case "c": toggleAutoCrop(nil); return true
+        case "l": toggleLoop(nil); return true
         case "s": cycleSubtitles(); return true
         case "a": cycleAudioTrack(nil); return true
         case ".": stepForward(nil); return true
@@ -568,7 +577,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     @objc func togglePlay() {
         guard let engine else { return }
-        if engine.isPlaying { engine.pause() } else { engine.play() }
+        if engine.isPlaying { engine.pause() }
+        else {
+            // At the end: start again from the beginning.
+            if engine.duration > 0, engine.currentTime >= engine.duration - 0.25 { engine.seek(to: 0, accurate: true) }
+            engine.play()
+        }
         playerView.controlBar.update(time: engine.currentTime, duration: engine.duration, playing: engine.isPlaying, buffered: engine.bufferedFractions)
         showControls()
     }
@@ -748,6 +762,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     // MARK: Auto-crop toggle (C, View menu, brightness popover)
 
+    /// Loop the current video (Playback › Loop, L, or the sidebar switch).
+    @objc func toggleLoop(_ sender: Any?) {
+        let sb = playerView.sidebar.model
+        sb.loop.toggle()
+        playerView.flash(sb.loop ? "Loop: on" : "Loop: off")
+    }
+
     @objc func toggleAutoCrop(_ sender: Any?) {
         settings.autoCrop.toggle()          // applied to every window by the settings observer
         playerView.flash(settings.autoCrop ? "Crop black bars: on" : "Crop black bars: off")
@@ -764,6 +785,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(showCurrentFileInFinder(_:)) { return currentURL?.isFileURL == true }
         if item.action == #selector(toggleAutoCrop(_:)) { item.state = settings.autoCrop ? .on : .off }
+        if item.action == #selector(toggleLoop(_:)) { item.state = playerView.sidebar.model.loop ? .on : .off; return engine != nil }
         return true
     }
 

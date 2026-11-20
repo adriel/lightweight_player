@@ -19,6 +19,7 @@ final class BenchRunner: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var failure: String?
     var seekLog: [String] = []
+    let loopTest = ProcessInfo.processInfo.environment["LP_BENCH_LOOP"] != nil
 
     init(engine: EngineKind, media: URL, seconds: Double) {
         engineKind = engine; self.media = media; self.seconds = seconds
@@ -37,13 +38,17 @@ final class BenchRunner: NSObject, NSApplicationDelegate {
             case .ready: self.engine.play()
             case .firstFrame: if self.firstFrameAt == nil { self.firstFrameAt = Date().timeIntervalSince(self.start) }
             case .failed(let m): self.failure = m; self.emit(["event": "failed", "message": m])
-            case .ended: self.emit(["event": "ended"])
+            case .ended:
+                self.emit(["event": "ended", "pos": round1(self.engine.currentTime)])
+                // LP_BENCH_LOOP: what the player's Loop option does at the end.
+                if self.loopTest { self.engine.seek(to: 0, accurate: true); self.engine.play(); self.emit(["event": "looped"]) }
             case .needsFallback: self.emit(["event": "needsFallback"])
             default: break
             }
         }
         start = Date()
         engine.open(media)
+        if loopTest { engine.volume = 0 }      // silent
         if ProcessInfo.processInfo.environment["LP_PACING"] != nil, engine is SampleBufferEngine {
             let link = engine.view.displayLink(target: self, selector: #selector(vsync(_:)))
             link.add(to: .main, forMode: .common)
@@ -79,8 +84,14 @@ final class BenchRunner: NSObject, NSApplicationDelegate {
         if ProcessInfo.processInfo.environment["LP_DEBUG"] != nil { line["diag"] = engine.diagnostics() }
         emit(line)
 
-        // Seek script: three +5s accurate skips, then a jump to 50%, then a jump back to 10%.
         let e = Int(el)
+        // Loop test: jump to 3 s before the end once, then just watch the position.
+        if loopTest {
+            if e == 3, engine.duration > 0 { engine.seek(to: engine.duration - 3, accurate: true) }
+            if el >= seconds { finish() }
+            return
+        }
+        // Seek script: three +5s accurate skips, then a jump to 50%, then a jump back to 10%.
         if [15, 16, 17].contains(e) { seekLog.append("+5@\(round1(engine.currentTime))"); engine.seek(to: engine.currentTime + 5, accurate: true) }
         if e == 22, engine.duration > 0 { engine.seek(to: engine.duration * 0.5, accurate: false) }
         if e == 30, engine.duration > 0 { engine.seek(to: engine.duration * 0.1, accurate: false) }

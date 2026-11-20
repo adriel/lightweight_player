@@ -545,7 +545,7 @@ final class SampleBufferEngine: PlayerEngine {
         guard gen == generation else { return }
         while videoRenderer.isReadyForMoreMediaData {
             guard let sb = nextVideo() else {
-                if eof { videoRenderer.stopRequestingMediaData(); resumeAudioIfThrottled(gen); checkEnded() }
+                if eof { videoRenderer.stopRequestingMediaData(); resumeAudioIfThrottled(gen); checkEnded(gen) }
                 else if !videoRenderer.isReadyForMoreMediaData { return }
                 return
             }
@@ -750,10 +750,12 @@ final class SampleBufferEngine: PlayerEngine {
         lastVideoPTS = 0; lastAudioPTS = 0
     }
 
-    private func checkEnded() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self, self.eof, self._duration > 0, self.currentTime >= self._duration - 1 else { return }
-            self.onEvent?(.ended)
+    /// The demuxer hits EOF seconds before playback gets there (read-ahead), so keep checking until the clock
+    /// actually reaches the end; a seek (new generation) cancels the wait.
+    private func checkEnded(_ gen: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self, gen == self.generation, self.eof, self._duration > 0 else { return }
+            if self.currentTime >= self._duration - 0.08 { self.onEvent?(.ended) } else { self.checkEnded(gen) }
         }
     }
 }

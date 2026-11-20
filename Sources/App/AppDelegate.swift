@@ -208,6 +208,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main.addItem(withTitle: "View", action: nil, keyEquivalent: "").submenu = view
 
         let playback = NSMenu(title: "Playback")
+        playback.addItem(item("Loop   ( L )", #selector(PlayerWindowController.toggleLoop(_:)), "l"))
+        playback.addItem(.separator())
         playback.addItem(item("Next Frame   ( . )", #selector(PlayerWindowController.stepForward(_:))))
         playback.addItem(item("Previous Frame   ( , )", #selector(PlayerWindowController.stepBackward(_:))))
         playback.addItem(.separator())
