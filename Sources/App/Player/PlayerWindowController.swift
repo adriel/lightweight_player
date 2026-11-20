@@ -1007,6 +1007,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         playerView.videoTopInset = 0
         animate(window, to: saved.frame) { [weak self] in
             window.styleMask = saved.style
+            // Going borderless for full screen drops the title bar's accessories, and restoring the title bar
+            // doesn't bring them back: re-attach the tags.
+            if let tags = self?.tagsAccessory, !window.titlebarAccessoryViewControllers.contains(tags) {
+                window.addTitlebarAccessoryViewController(tags)
+            }
+            self?.fitTitle()
             if saved.aspect.width > 0 { window.aspectRatio = saved.aspect }
             window.makeFirstResponder(self?.playerView)
             self?.showControls()
