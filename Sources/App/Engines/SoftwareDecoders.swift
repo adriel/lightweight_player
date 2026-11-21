@@ -52,7 +52,10 @@ final class SWAudioDecoder {
 
     deinit { avcodec_free_context(&ctx); av_frame_free(&frame); av_packet_free(&pkt) }
 
-    func flush() { if let ctx { avcodec_flush_buffers(ctx) } }
+    func flush() {
+        if let ctx { avcodec_flush_buffers(ctx) }
+        acc.removeAll(keepingCapacity: true); accTS = nil; nextTS = nil
+    }
 
     /// Feeds one compressed sample (nil = end of stream) and returns any decoded PCM buffers.
     func decode(_ sb: CMSampleBuffer?) -> [CMSampleBuffer] {
@@ -60,28 +63,63 @@ final class SWAudioDecoder {
         withPacket(sb, pkt) { p in _ = avcodec_send_packet(ctx, p) }
         var out: [CMSampleBuffer] = []
         while avcodec_receive_frame(ctx, frame) == 0 {
-            if let b = makeBuffer(frame) { out.append(b) }
+            append(frame, to: &out)
             av_frame_unref(frame)
         }
+        if sb == nil, let b = emit() { out.append(b) }      // end of stream: whatever is left
         return out
     }
 
-    private func makeBuffer(_ f: UnsafeMutablePointer<AVFrame>) -> CMSampleBuffer? {
+    // Decoded frames are collected into buffers of at least `minFrames` samples. TrueHD decodes in 40-sample
+    // (0.83 ms) frames, 1200 a second, and AVSampleBufferAudioRenderer plays a stream of buffers that small as
+    // silence (measured: -180 dBFS out, while the same file's AC-3 track plays normally).
+    private static let minFrames = 1024
+    private var acc: [Float] = []                 // interleaved samples waiting to be emitted
+    private var accTS: Int64?                      // 90 kHz timestamp of acc's first sample
+    private var nextTS: Int64?                     // where the samples decoded so far end
+    private var accKey = (0, 0)                    // (channels, rate) of acc
+
+    private func append(_ f: UnsafeMutablePointer<AVFrame>, to out: inout [CMSampleBuffer]) {
         let ch = Int(f.pointee.ch_layout.nb_channels), n = Int(f.pointee.nb_samples), rate = Int(f.pointee.sample_rate)
-        guard ch > 0, n > 0 else { return nil }
-        if format == nil || formatKey != (ch, rate) { format = makeFormat(f); formatKey = (ch, rate) }
-        guard let format else { return nil }
-        let bytes = n * ch * 4
+        guard ch > 0, n > 0, rate > 0 else { return }
+        let raw = f.pointee.best_effort_timestamp != lp_av_nopts() ? f.pointee.best_effort_timestamp : f.pointee.pts
+        // Frames without a timestamp (Matroska laces carry one per block) continue where the last one ended.
+        let ts = raw != lp_av_nopts() ? raw : (nextTS ?? 0)
+        // A format change or a real gap/jump (not container rounding) ends the current buffer.
+        if !acc.isEmpty, accKey != (ch, rate) || abs(ts - (nextTS ?? ts)) > 9000 { if let b = emit() { out.append(b) } }
+        if acc.isEmpty {
+            if format == nil || formatKey != (ch, rate) { format = makeFormat(f); formatKey = (ch, rate) }
+            accKey = (ch, rate); accTS = ts
+        }
+        let base = acc.count
+        acc.append(contentsOf: repeatElement(0, count: n * ch))
+        let ok = acc.withUnsafeMutableBufferPointer { convert(f, ch: ch, n: n, into: $0.baseAddress! + base) }
+        if !ok { acc.removeLast(n * ch); return }
+        nextTS = ts + Int64(n) * 90000 / Int64(rate)
+        if acc.count / ch >= Self.minFrames, let b = emit() { out.append(b) }
+    }
+
+    private func emit() -> CMSampleBuffer? {
+        defer { acc.removeAll(keepingCapacity: true); accTS = nil }
+        let ch = accKey.0
+        guard !acc.isEmpty, ch > 0, let format, formatKey == accKey, let accTS else { return nil }
+        let bytes = acc.count * 4
         var block: CMBlockBuffer?
         guard CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: bytes, blockAllocator: CMMemoryPoolGetAllocator(pool),
                                                  customBlockSource: nil, offsetToData: 0, dataLength: bytes, flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block) == noErr,
               let block else { return nil }
-        var raw: UnsafeMutablePointer<CChar>?
-        CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: nil, dataPointerOut: &raw)
-        let dst = UnsafeMutableRawPointer(raw!).assumingMemoryBound(to: Float.self)
+        let copied = acc.withUnsafeBytes { CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: bytes) }
+        guard copied == noErr else { return nil }
+        var sb: CMSampleBuffer?
+        CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: block, formatDescription: format, sampleCount: acc.count / ch,
+                                                             presentationTimeStamp: CMTime(value: accTS, timescale: 90000), packetDescriptions: nil, sampleBufferOut: &sb)
+        return sb
+    }
+
+    /// Interleaves / converts one frame to Float32 at `dst` with Accelerate (strided copies, no per-sample loops).
+    private func convert(_ f: UnsafeMutablePointer<AVFrame>, ch: Int, n: Int, into dst: UnsafeMutablePointer<Float>) -> Bool {
         let fmt = AVSampleFormat(rawValue: f.pointee.format)
         let planar = av_sample_fmt_is_planar(fmt) != 0
-        // Interleave / convert with Accelerate (strided copies, no per-sample Swift loops).
         for c in 0..<ch {
             let src = UnsafeRawPointer(planar ? f.pointee.extended_data[c]! : f.pointee.extended_data[0]!)
             let srcStride = planar ? 1 : ch
@@ -100,14 +138,10 @@ final class SWAudioDecoder {
             case AV_SAMPLE_FMT_DBL, AV_SAMPLE_FMT_DBLP:
                 vDSP_vdpsp(src.assumingMemoryBound(to: Double.self) + srcOff, srcStride, dst + c, ch, vDSP_Length(n))
             default:
-                return nil
+                return false
             }
         }
-        let ts = f.pointee.best_effort_timestamp != lp_av_nopts() ? f.pointee.best_effort_timestamp : f.pointee.pts
-        var sb: CMSampleBuffer?
-        CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: block, formatDescription: format, sampleCount: n,
-                                                             presentationTimeStamp: CMTime(value: ts, timescale: 90000), packetDescriptions: nil, sampleBufferOut: &sb)
-        return sb
+        return true
     }
 
     private func makeFormat(_ f: UnsafeMutablePointer<AVFrame>) -> CMAudioFormatDescription? {

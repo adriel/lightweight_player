@@ -153,6 +153,8 @@ final class SampleBufferEngine: PlayerEngine {
                 _subtitleTracks = d.subtitleStreams
                 demuxer = d
                 _duration = d.duration
+                let sdr = d.canToneMap && !Settings.shared.hdrEnabled
+                sdrOut = sdr
                 let hdr = d.videoFormat.map(FFDemuxer.isHDR) ?? false
                 let ad = audioDemuxer ?? d
                 let hdrName = d.hdrFormatName, decoding = d.videoDecoding, audioDec = ad.audioDecoding
@@ -160,6 +162,7 @@ final class SampleBufferEngine: PlayerEngine {
                 let frame = d.frameRateInfo.map { (1 / $0.fps, $0.base) }
                 DispatchQueue.main.async {
                     self.isHDRVideo = hdr || hdrName != nil
+                    self.sdrMode = sdr; self.canToneMap = d.canToneMap
                     self.hdrFormat = hdrName; self.videoDecoding = decoding; self.audioDecoding = audioDec
                     self.audioTracks = tracks; self.chapters = chapters
                     self.selectedAudioTrack = audioIdx >= 0 ? audioIdx : nil
@@ -302,13 +305,178 @@ final class SampleBufferEngine: PlayerEngine {
         return out
     }
 
-    /// Recreates the decoder with/without SDR tone mapping and re-shows the current frame.
-    func setHDR(_ on: Bool) {
-        let t = currentTime
-        queue.async { [self] in
-            guard let demuxer, demuxer.setToneMapToSDR(!on) else { return }
-            DispatchQueue.main.async { self.seek(to: t, accurate: true) }
+    // MARK: HDR on/off
+    // HDR content is decoded in-app in its own format; with HDR off each frame is tone-mapped to SDR on its way to
+    // the renderer (HWVideoDecoder.sdrCopy). Switching therefore only changes how the next frames are converted —
+    // no seek, no pause. The change is a cross-fade: an overlay layer on top keeps playing the old look, in step
+    // with the video, while the video underneath switches; then the overlay fades out.
+    private var sdrOut = false                 // feed queue: tone-map frames to SDR
+    private var fade: HDRFade?                 // feed queue: the overlay also gets frames (in the old look)
+    private var sdrMode = false                // main: the current setting
+    private var canToneMap = false
+    private var fadeMain: HDRFade?             // main
+    private static let fadeDuration = 0.4
+
+    private final class HDRFade {
+        let view: NSView, layer: AVSampleBufferDisplayLayer
+        let oldSDR: Bool, newSDR: Bool
+        let started = Date()
+        var firstPTS: Double?                  // main: first frame the overlay got
+        var shownAt: Double?                   // main: clock time the overlay was made visible
+        var switchRequested = false            // main
+        var switchPTS: Double?                 // main: first frame the video got in the new look
+        var fading = false                     // main
+        init(view: NSView, layer: AVSampleBufferDisplayLayer, oldSDR: Bool, newSDR: Bool) {
+            self.view = view; self.layer = layer; self.oldSDR = oldSDR; self.newSDR = newSDR
         }
+    }
+
+    func setHDR(_ on: Bool) {
+        if Self.fadeDebug { NSLog("setHDR %d canToneMap %d sdrMode %d playing %d", on ? 1 : 0, canToneMap ? 1 : 0, sdrMode ? 1 : 0, wantsPlay ? 1 : 0) }
+        guard canToneMap, sdrMode == on else { return }
+        let newSDR = !on, oldSDR = sdrMode
+        endFade()
+        sdrMode = newSDR
+        let playing = wantsPlay && synchronizer.rate != 0 && hasShownFirstFrame
+        guard let f = makeFadeOverlay(oldSDR: oldSDR, newSDR: newSDR) else {
+            queue.async { [self] in sdrOut = newSDR }
+            if !playing { reshowCurrentFrame() }
+            return
+        }
+        if playing {
+            // The overlay starts getting the old look from the next decoded frame on; the video switches once the
+            // overlay is showing those frames (see pollFade).
+            f.view.alphaValue = 0
+            fadeMain = f
+            queue.async { [self] in fade = f }
+            pollFade(f)
+        } else {
+            // Paused: the overlay holds the frame on screen; the video underneath re-shows it in the new look,
+            // then the overlay fades out.
+            guard let pb = videoRenderer.displayedPixelBuffer(), let still = Self.stillSample(pb) else {
+                f.view.removeFromSuperview(); queue.async { [self] in sdrOut = newSDR }; reshowCurrentFrame(); return
+            }
+            f.layer.sampleBufferRenderer.enqueue(still)
+            queue.async { [self] in sdrOut = newSDR }
+            let gen = reshowCurrentFrame()
+            fadeMain = f
+            f.switchRequested = true
+            stillFadeGen = gen
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.startFadeOut(f) }   // never stuck
+        }
+    }
+
+    /// Paused: an accurate seek to the frame on screen re-decodes it in the current look. Returns the seek's generation.
+    @discardableResult private func reshowCurrentFrame() -> Int {
+        let fd = frameDuration
+        let cur = frameBase + ((currentTime - frameBase) / fd + 1e-3).rounded(.down) * fd
+        return performSeek(max(0, cur + 1e-4), accurate: true, forward: false, scrub: false, keepFade: true)
+    }
+    private var stillFadeGen: Int?
+
+    /// The overlay: a second display layer in its own view on top (a plain layer above the video layer isn't
+    /// drawn over HDR video), same placement and colour filters as the video, following the video's clock.
+    private func makeFadeOverlay(oldSDR: Bool, newSDR: Bool) -> HDRFade? {
+        guard let host = view as? LayerHostView else { return nil }
+        let l = AVSampleBufferDisplayLayer()
+        l.videoGravity = displayLayer.videoGravity
+        l.filters = displayLayer.filters
+        var tb: CMTimebase?
+        CMTimebaseCreateWithSourceTimebase(allocator: nil, sourceTimebase: decoupled ? videoTimebase : synchronizer.timebase, timebaseOut: &tb)
+        guard let tb else { return nil }
+        CMTimebaseSetTime(tb, time: CMTimebaseGetTime(decoupled ? videoTimebase : synchronizer.timebase))
+        CMTimebaseSetRate(tb, rate: 1)
+        l.controlTimebase = tb
+        let v = PassThroughView(frame: host.bounds)
+        v.wantsLayer = true
+        v.autoresizingMask = [.width, .height]
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        l.frame = displayLayer.frame                         // same placement (black-bar crop)
+        v.layer?.addSublayer(l)
+        CATransaction.commit()
+        host.addSubview(v)
+        return HDRFade(view: v, layer: l, oldSDR: oldSDR, newSDR: newSDR)
+    }
+
+    private static func stillSample(_ pb: CVPixelBuffer) -> CMSampleBuffer? {
+        var fd: CMVideoFormatDescription?
+        CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: pb, formatDescriptionOut: &fd)
+        guard let fd else { return nil }
+        var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .zero, decodeTimeStamp: .invalid)
+        var sb: CMSampleBuffer?
+        CMSampleBufferCreateReadyWithImageBuffer(allocator: nil, imageBuffer: pb, formatDescription: fd, sampleTiming: &timing, sampleBufferOut: &sb)
+        sb?.setAttachment(kCMSampleAttachmentKey_DisplayImmediately, true)
+        return sb
+    }
+
+    static let fadeDebug = ProcessInfo.processInfo.environment["LP_FADE_DEBUG"] != nil
+    /// Playing: overlay shows the old look → switch the video → fade the overlay out. Checked every 20 ms.
+    private func pollFade(_ f: HDRFade) {
+        guard fadeMain === f, !f.fading else { return }
+        // Waiting on the clock (paused meanwhile, a stall): give up after a while and just switch.
+        if Date().timeIntervalSince(f.started) > 8 { endFade(); return }
+        let now = currentTime
+        // A display layer shows the first frame it gets straight away, ahead of its time: keep the overlay invisible
+        // until the clock reaches that frame (it shows the same picture as the video until the switch).
+        if f.shownAt == nil, let p = f.firstPTS, now >= p + 0.01 { f.view.alphaValue = 1; f.shownAt = now }
+        if !f.switchRequested, let s = f.shownAt, now >= s + 0.04 {
+            f.switchRequested = true
+            queue.async { [self] in if fade === f { sdrOut = f.newSDR } }
+        }
+        if let p = f.switchPTS, now >= p + 0.03 { startFadeOut(f); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in self?.pollFade(f) }
+    }
+
+    private func startFadeOut(_ f: HDRFade) {
+        guard fadeMain === f, !f.fading else { return }
+        f.fading = true
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = Self.fadeDuration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            f.view.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self, self.fadeMain === f else { return }
+            self.endFade()
+        })
+    }
+
+    /// Ends the transition now: overlay gone, frames in the new look from here on.
+    private func endFade() {
+        guard let f = fadeMain else { return }
+        if Self.fadeDebug { NSLog("fade end at %.3f (fading %d)", currentTime, f.fading ? 1 : 0) }
+        fadeMain = nil
+        stillFadeGen = nil
+        f.view.removeFromSuperview()
+        queue.async { [self] in
+            if fade === f { fade = nil }
+            sdrOut = f.newSDR
+            f.layer.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
+        }
+    }
+
+    /// Feed queue: a video frame (decoded, in its own format) about to be enqueued at `pts`. Returns the version
+    /// for the video layer; during a transition the overlay gets one in the old look.
+    private func present(_ sb: CMSampleBuffer, pts: Double, hidden: Bool) -> CMSampleBuffer {
+        guard canConvert, !hidden else { return sb }
+        let hw = demuxer?.hwVideo
+        func look(_ sdr: Bool) -> CMSampleBuffer? { sdr ? hw?.sdrCopy(sb) : Self.copy(sb) }
+        if let f = fade, let old = look(f.oldSDR) {
+            f.layer.sampleBufferRenderer.enqueue(decoupled && timeScale != 1 ? scaledForVideoClock(old) : old)
+            let switched = sdrOut == f.newSDR && f.oldSDR != f.newSDR
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.fadeMain === f else { return }
+                if f.firstPTS == nil { f.firstPTS = pts }
+                if switched, f.switchPTS == nil { f.switchPTS = pts }
+            }
+        }
+        return sdrOut ? (hw?.sdrCopy(sb) ?? sb) : sb
+    }
+    private var canConvert: Bool { demuxer?.hwVideo != nil && (sdrOut || fade != nil) }
+
+    private static func copy(_ sb: CMSampleBuffer) -> CMSampleBuffer? {
+        var out: CMSampleBuffer?
+        CMSampleBufferCreateCopy(allocator: nil, sampleBuffer: sb, sampleBufferOut: &out)
+        return out
     }
 
     private(set) var isHDRVideo = false
@@ -450,12 +618,20 @@ final class SampleBufferEngine: PlayerEngine {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: end)
     }
     private var scrubEnd: DispatchWorkItem?
+
+    /// Paused HDR switch: the frame in the new look is in the video layer; fade the held frame away.
+    private func stillFadeShown(_ gen: Int) {
+        guard let f = fadeMain, stillFadeGen == gen else { return }
+        stillFadeGen = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in self?.startFadeOut(f) }
+    }
     /// Feed queue: while scrubbing, only the landed keyframe is decoded and shown; clock and audio stay paused,
     /// so the next jump has almost nothing to flush.
     private var scrubHold = false
 
     @discardableResult
-    private func performSeek(_ seconds: Double, accurate: Bool, forward: Bool, scrub: Bool) -> Int {
+    private func performSeek(_ seconds: Double, accurate: Bool, forward: Bool, scrub: Bool, keepFade: Bool = false) -> Int {
+        if !keepFade { endFade() }             // a seek refills everything in the new look anyway
         let target = max(0, min(seconds, _duration > 0 ? _duration - 0.5 : seconds))
         seekGenerationRequested += 1
         let gen = seekGenerationRequested
@@ -491,6 +667,7 @@ final class SampleBufferEngine: PlayerEngine {
     }
 
     func close() {
+        endFade()
         metricsTimer?.invalidate()
         bufferTimer?.invalidate()
         displaySync?.stop()
@@ -566,10 +743,11 @@ final class SampleBufferEngine: PlayerEngine {
             if hide { sb.setAttachment(kCMSampleAttachmentKey_DoNotDisplay, true) }
             lastVideoPTS = max(lastVideoPTS, pts)
             if Self.videoDebug { debugVideo(sb) }
-            videoRenderer.enqueue(decoupled && timeScale != 1 ? scaledForVideoClock(sb) : sb)
+            let shown = present(sb, pts: pts, hidden: hide)
+            videoRenderer.enqueue(decoupled && timeScale != 1 ? scaledForVideoClock(shown) : shown)
             if !firstFrameSignaled && !hide {
                 firstFrameSignaled = true
-                DispatchQueue.main.async { self.seekShown(gen) }
+                DispatchQueue.main.async { self.seekShown(gen); self.stillFadeShown(gen) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.onEvent?(.firstFrame) }
                 DispatchQueue.main.async { self.hasShownFirstFrame = true }
                 if scrubHold { videoRenderer.stopRequestingMediaData(); return }

@@ -333,11 +333,15 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         AVPictureInPictureController(playerLayer: playerLayer)
     }
 
-    func play() { player.play() }
+    func play() {
+        player.play()
+        if coverHeld { coverHeld = false; removeCover(after: 0.25, fade: 0.2) }   // frames draw right once playing
+    }
     func pause() { endHandover(); player.pause() }
+    private func dropHeldCover() { if coverHeld { coverHeld = false; removeCover() } }
 
     func seek(to seconds: Double, accurate: Bool) {
-        endHandover()
+        endHandover(); dropHeldCover()
         let t = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         if accurate {
             player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -350,6 +354,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     private var scrubbing = false
     private var pendingScrub: (Double, Bool)?
     func scrub(to seconds: Double, forward: Bool) {
+        dropHeldCover()
         if scrubbing { pendingScrub = (seconds, forward); return }
         scrubbing = true
         let t = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
@@ -363,7 +368,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     }
 
     func close() {
-        endHandover(); removeCover()
+        endHandover(); removeCover(); coverHeld = false
         player.pause()
         player.replaceCurrentItem(with: nil)
         observers.removeAll(); itemObservers.removeAll()
@@ -412,6 +417,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     }
 
     func stepFrame(forward: Bool) {
+        dropHeldCover()
         player.pause()
         player.currentItem?.step(byCount: forward ? 1 : -1)
     }
@@ -421,14 +427,17 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
     /// Changing a playing item's composition makes AVPlayer rebuild its pipeline: a few frames stall and ~3 come
     /// out unconverted (a bright flash). While playing, the switch is handed over to a second, muted player: it
     /// opens the same file with the new setting, prerolls ~0.5 s ahead and starts on the main player's clock at
-    /// exactly that moment, so its picture matches frame for frame. It's shown on top while the main item changes
-    /// underneath, then removed once that has settled — no seek, no still, the sound is never touched.
-    /// Paused (or a stream): an SDR still covers a seek instead; nothing is moving, so there's nothing to hide.
+    /// exactly that moment, so its picture matches frame for frame. It fades in on top (a 0.4 s cross-fade between
+    /// the two looks) and then takes over — no seek, no still, the sound is never interrupted.
+    /// Paused, the same hand-over, with an SDR still on top while HDR is off (see setHDR). A stream: an SDR still
+    /// covers a seek instead, fading in or out for the same cross-fade.
     private var sdrComposition = false
     private var preparedSDR: AVVideoComposition?
     private var cover: NSView?
     private var handover: Handover?
     private var switchGeneration = 0
+    private var coverHeld = false              // the SDR still stays while paused (see setHDR)
+    private static let fadeDuration = 0.4
 
     @MainActor private func sdrVideoComposition() async -> AVVideoComposition? {
         if let preparedSDR { return preparedSDR }
@@ -451,26 +460,63 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
             if hdrTracks.isEmpty { return }
             let target: AVVideoComposition? = on ? nil : await self.sdrVideoComposition()
             guard on || target != nil, gen == self.switchGeneration, self.player.currentItem === item else { return }
-            if self.player.rate != 0, self.playerLayer.isReadyForDisplay, await self.handOver(to: target, item: item, gen: gen) { return }
-            guard gen == self.switchGeneration, self.player.currentItem === item else { return }
+            func current() -> Bool { gen == self.switchGeneration && self.player.currentItem === item }
+            if self.player.rate == 0, self.playerLayer.isReadyForDisplay {
+                // Paused. A paused frame drawn through the SDR composition comes out far too dark (AVFoundation;
+                // measured 0.30 of SDR white instead of 0.67) until playback resumes. So switching off, an SDR still
+                // of the frame fades in and stays on top while paused; the new player is prepared underneath and the
+                // still goes once it plays. Switching back on, the new player goes underneath and the still fades out.
+                if !on {
+                    self.removeCover()
+                    let covered = await self.coverWithStill(item, hidden: true)
+                    guard current() else { self.removeCover(); return }
+                    if covered {
+                        NSAnimationContext.runAnimationGroup({ $0.duration = Self.fadeDuration; self.cover?.animator().alphaValue = 1 }, completionHandler: nil)
+                        try? await Task.sleep(nanoseconds: UInt64(Self.fadeDuration * 1e9))
+                        guard current() else { self.removeCover(); return }
+                        self.coverHeld = true
+                    }
+                    if await self.handOver(to: target, item: item, gen: gen, fade: !covered) { return }
+                    guard current() else { return }
+                    item.videoComposition = target
+                    return
+                }
+                if self.coverHeld, self.cover != nil {
+                    if !(await self.handOver(to: nil, item: item, gen: gen, fade: false)) {
+                        guard current() else { return }
+                        item.videoComposition = nil
+                    }
+                    guard gen == self.switchGeneration else { return }      // (the item has changed if handed over)
+                    self.coverHeld = false
+                    self.removeCover(after: 0.05, fade: Self.fadeDuration)
+                    return
+                }
+            }
+            if self.playerLayer.isReadyForDisplay, await self.handOver(to: target, item: item, gen: gen, fade: true) { return }
+            guard current() else { return }
             self.removeCover()
-            if on { item.videoComposition = nil; return }
-            // Paused or not a local file: cover with an SDR still, change, and seek in place so the new rendering
-            // shows straight away.
-            let covered = await self.coverWithStill(item)
-            guard gen == self.switchGeneration, self.player.currentItem === item else { self.removeCover(); return }
+            // Not a local file (or the hand-over failed): an SDR still of the frame covers the change, and a seek in
+            // place shows the new rendering straight away. Turning HDR off, the still fades in over the HDR picture;
+            // turning it on, it fades out over the HDR one.
+            let covered = await self.coverWithStill(item, hidden: !on)
+            guard current() else { self.removeCover(); return }
+            if covered, !on {
+                NSAnimationContext.runAnimationGroup({ $0.duration = Self.fadeDuration; self.cover?.animator().alphaValue = 1 }, completionHandler: nil)
+                try? await Task.sleep(nanoseconds: UInt64(Self.fadeDuration * 1e9))
+                guard current() else { self.removeCover(); return }
+            }
             item.videoComposition = target
             guard covered else { return }
             self.player.seek(to: item.currentTime(), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                DispatchQueue.main.async { self?.removeCover(after: 0.12) }
+                DispatchQueue.main.async { self?.removeCover(after: 0.12, fade: on ? Self.fadeDuration : 0.15) }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.removeCover() }   // never stuck
         }
     }
 
-    /// Seamless switch while playing (see above). False if it couldn't be set up; the caller then switches the
-    /// plain way.
-    @MainActor private func handOver(to composition: AVVideoComposition?, item: AVPlayerItem, gen: Int) async -> Bool {
+    /// Seamless switch (see above), playing or paused (then the new player is positioned on the same frame). False if
+    /// it couldn't be set up; the caller then switches the plain way. `fade`: cross-fade to the new picture.
+    @MainActor private func handOver(to composition: AVVideoComposition?, item: AVPlayerItem, gen: Int, fade: Bool) async -> Bool {
         guard let asset, (asset as? AVURLAsset)?.url.isFileURL == true, let timebase = item.timebase else { return false }
         endHandover()
         let item2 = AVPlayerItem(asset: asset)
@@ -486,7 +532,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         let l2 = AVPlayerLayer(player: p2)
         l2.videoGravity = playerLayer.videoGravity
         l2.filters = playerLayer.filters                     // brightness / contrast / gamma
-        let v = NSView(frame: view.bounds)
+        let v = PassThroughView(frame: view.bounds)
         v.wantsLayer = true
         v.autoresizingMask = [.width, .height]
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -494,32 +540,53 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         v.layer?.addSublayer(l2)
         CATransaction.commit()
         v.isHidden = true
-        view.addSubview(v)
+        if let cover { view.addSubview(v, positioned: .below, relativeTo: cover) } else { view.addSubview(v) }   // under a held still
         handover = Handover(player: p2, view: v)
+        let playing = player.rate != 0
         func alive() -> Bool {
-            gen == switchGeneration && handover?.player === p2 && player.currentItem === item && player.rate != 0
+            gen == switchGeneration && handover?.player === p2 && player.currentItem === item && (player.rate != 0) == playing
         }
-        // Ready (well under 0.1 s for a local file), positioned ~0.5 s ahead, prerolled.
+        // Ready (well under 0.1 s for a local file).
         for _ in 0..<100 where item2.status == .unknown { try? await Task.sleep(nanoseconds: 20_000_000) }
         guard item2.status == .readyToPlay, alive() else { endHandover(p2); return false }
-        let rate = player.rate
-        let start = item.currentTime() + CMTime(seconds: 0.5 * Double(rate), preferredTimescale: 6000)
-        guard await p2.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero), alive() else { endHandover(p2); return false }
-        _ = await p2.preroll(atRate: rate)
-        guard alive() else { endHandover(p2); return false }
-        // Start it when the main player reaches `start`, on the same clock.
-        let host = CMSyncConvertTime(start, from: timebase, to: CMClockGetHostTimeClock())
-        let wait = (host - CMClockGetTime(CMClockGetHostTimeClock())).seconds
-        guard wait > 0.03 else { endHandover(p2); return false }
-        p2.setRate(rate, time: start, atHostTime: host)
-        try? await Task.sleep(nanoseconds: UInt64((wait + 0.05) * 1e9))
+        if playing {
+            // Positioned ~0.5 s ahead, prerolled, started when the main player reaches that point, on the same clock.
+            let rate = player.rate
+            let start = item.currentTime() + CMTime(seconds: 0.5 * Double(rate), preferredTimescale: 6000)
+            guard await p2.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero), alive() else { endHandover(p2); return false }
+            _ = await p2.preroll(atRate: rate)
+            guard alive() else { endHandover(p2); return false }
+            let host = CMSyncConvertTime(start, from: timebase, to: CMClockGetHostTimeClock())
+            let wait = (host - CMClockGetTime(CMClockGetHostTimeClock())).seconds
+            guard wait > 0.03 else { endHandover(p2); return false }
+            p2.setRate(rate, time: start, atHostTime: host)
+            try? await Task.sleep(nanoseconds: UInt64((wait + 0.05) * 1e9))
+        } else {
+            // Paused: on the same frame, drawn.
+            guard await p2.seek(to: item.currentTime(), toleranceBefore: .zero, toleranceAfter: .zero), alive() else { endHandover(p2); return false }
+            for _ in 0..<50 where !l2.isReadyForDisplay { try? await Task.sleep(nanoseconds: 20_000_000) }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
         guard alive() else { endHandover(p2); return false }
 
         // Both show the same frame now. The new player takes over: picture on top, sound, observers, and the
         // main video layer underneath. The old player keeps running (muted, in step) until that layer shows
         // the new player's frames, then it's closed. Its item is never changed, so nothing rewinds or stalls.
-        let old = player
+        // Cross-fade: the new player's picture fades in over the old one, both playing in step.
+        // (The layer's own opacity: fading its view's alpha has no effect on HDR video.)
+        if fade {
+            let anim = CABasicAnimation(keyPath: "opacity")
+            anim.fromValue = 0; anim.toValue = 1
+            anim.duration = Self.fadeDuration
+            anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            l2.add(anim, forKey: "fade")
+        }
         v.isHidden = false
+        if fade {
+            try? await Task.sleep(nanoseconds: UInt64((Self.fadeDuration + 0.03) * 1e9))
+            guard alive() else { endHandover(p2); return false }
+        }
+        let old = player
         p2.isMuted = old.isMuted
         old.isMuted = true
         player = p2
@@ -556,7 +623,7 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
 
     /// Lays an SDR still of (about) the frame on screen over the video. False when there's nothing to cover
     /// (nothing shown yet, or not a local file).
-    @MainActor private func coverWithStill(_ item: AVPlayerItem) async -> Bool {
+    @MainActor private func coverWithStill(_ item: AVPlayerItem, hidden: Bool = false) async -> Bool {
         guard playerLayer.isReadyForDisplay, let url = (asset as? AVURLAsset)?.url, url.isFileURL else { return false }
         let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
         gen.appliesPreferredTrackTransform = true
@@ -571,10 +638,11 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         guard let image = try? await gen.image(at: t).image else { return false }
         removeCover()
         // Its own view on top of the video: a plain layer above the AVPlayerLayer isn't drawn over HDR video.
-        let v = NSView(frame: view.bounds)
+        let v = PassThroughView(frame: view.bounds)
         v.wantsLayer = true
         v.autoresizingMask = [.width, .height]
         v.layer?.backgroundColor = NSColor.black.cgColor
+        if hidden { v.alphaValue = 0 }
         // Same placement as the video (the player layer is enlarged and offset when black bars are cropped).
         let l = CALayer()
         l.contents = image
@@ -586,13 +654,17 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         return true
     }
 
-    private func removeCover(after delay: Double = 0) {
+    private func removeCover(after delay: Double = 0, fade: Double = 0.15) {
         guard let v = cover else { return }
         if delay == 0 { cover = nil; v.removeFromSuperview(); return }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.cover === v else { return }
             self.cover = nil
-            NSAnimationContext.runAnimationGroup({ $0.duration = 0.15; v.animator().alphaValue = 0 }, completionHandler: { v.removeFromSuperview() })
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = fade
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                v.animator().alphaValue = 0
+            }, completionHandler: { v.removeFromSuperview() })
         }
     }
 
@@ -611,6 +683,11 @@ final class AVPlayerEngine: NSObject, PlayerEngine {
         }
         return d
     }
+}
+
+/// An overlay on the video (HDR switch cross-fades) that clicks and drags go straight through.
+final class PassThroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// An NSView that hosts a single CALayer filling its bounds (no implicit animations on resize).

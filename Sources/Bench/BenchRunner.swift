@@ -48,13 +48,14 @@ final class BenchRunner: NSObject, NSApplicationDelegate {
         }
         start = Date()
         engine.open(media)
-        if loopTest { engine.volume = 0 }      // silent
+        if loopTest || !hdrTimes.isEmpty { engine.volume = 0 }      // silent
         if ProcessInfo.processInfo.environment["LP_PACING"] != nil, engine is SampleBufferEngine {
             let link = engine.view.displayLink(target: self, selector: #selector(vsync(_:)))
             link.add(to: .main, forMode: .common)
             displayLink = link
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+        for t in hdrTimes + [Double(ProcessInfo.processInfo.environment["LP_BENCH_RESUME"] ?? "") ?? 0] where t > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self.map { $0.hdrToggles(at: Date().timeIntervalSince($0.start)) } } }
     }
 
     // Frame pacing: count how many vsyncs each displayed frame stays on screen.
@@ -85,6 +86,7 @@ final class BenchRunner: NSObject, NSApplicationDelegate {
         emit(line)
 
         let e = Int(el)
+        hdrToggles(at: el)
         // Loop test: jump to 3 s before the end once, then just watch the position.
         if loopTest {
             if e == 3, engine.duration > 0 { engine.seek(to: engine.duration - 3, accurate: true) }
@@ -92,6 +94,7 @@ final class BenchRunner: NSObject, NSApplicationDelegate {
             return
         }
         // Seek script: three +5s accurate skips, then a jump to 50%, then a jump back to 10%.
+        guard scriptedSeeks else { if el >= seconds { finish() }; return }
         if [15, 16, 17].contains(e) { seekLog.append("+5@\(round1(engine.currentTime))"); engine.seek(to: engine.currentTime + 5, accurate: true) }
         if e == 22, engine.duration > 0 { engine.seek(to: engine.duration * 0.5, accurate: false) }
         if e == 30, engine.duration > 0 { engine.seek(to: engine.duration * 0.1, accurate: false) }
@@ -102,6 +105,25 @@ final class BenchRunner: NSObject, NSApplicationDelegate {
         }
         if el >= seconds { finish() }
     }
+
+    // LP_BENCH_HDR=4,10: switch HDR off / on at those seconds (starting from the saved setting); no seek script.
+    // LP_BENCH_PAUSE=3: pause at that second (to test switching while paused).
+    let hdrTimes = (ProcessInfo.processInfo.environment["LP_BENCH_HDR"] ?? "").split(separator: ",").compactMap { Double($0) }
+    var hdrDone = 0
+    var resumed = false
+    lazy var hdrOn = Settings.shared.hdrEnabled
+    func hdrToggles(at el: Double) {
+        let env = ProcessInfo.processInfo.environment
+        let resume = env["LP_BENCH_RESUME"].flatMap(Double.init)
+        if let p = env["LP_BENCH_PAUSE"].flatMap(Double.init), el >= p, el < (resume ?? .infinity), engine.isPlaying { engine.pause() }
+        if let r = resume, el >= r, !engine.isPlaying, !resumed { resumed = true; engine.play() }
+        while hdrDone < hdrTimes.count, el >= hdrTimes[hdrDone] - 0.01 {
+            hdrDone += 1; hdrOn.toggle()
+            engine.setHDR(hdrOn)
+            emit(["event": "hdr", "on": hdrOn, "pos": round2(engine.currentTime)])
+        }
+    }
+    var scriptedSeeks: Bool { hdrTimes.isEmpty && ProcessInfo.processInfo.environment["LP_BENCH_PAUSE"] == nil }
 
     func finish() {
         timer?.invalidate()

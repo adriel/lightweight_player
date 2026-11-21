@@ -57,3 +57,7 @@ ls -la
 [[ -f vobsub_4k.mkv ]] || $FF -i pgs_4k.mkv -map 0:v -map 0:a -map 0:s -c:v copy -c:a copy -c:s dvdsub -disposition:s:0 forced vobsub_4k.mkv
 # Letterboxed 2.39:1 picture inside a 16:9 frame (auto-crop test)
 [[ -f letterbox_239.mkv ]] || $FF -ss 30 -t 30 -i h264_1080p.mp4 -vf "scale=1920:804,pad=1920:1080:0:138:black" -c:v h264_videotoolbox -b:v 8M -c:a copy letterbox_239.mkv
+# HDR switch test: flat PQ grey (HDR and SDR differ clearly in brightness) with a box moving inside the middle of
+# the frame, so screen captures show both the cross-fade and any repeated frame.
+[[ -f fade_pq.mp4 ]] || $FF -f lavfi -i "color=c=0x8c8c8c:s=1920x1080:r=24000/1001:d=20" -f lavfi -i "color=c=white:s=220x220:r=24000/1001:d=20" -f lavfi -i "sine=f=440:d=20" -filter_complex "[0][1]overlay=x='450+mod(t*480\,800)':y=400,format=yuv420p10le[v]" -map "[v]" -map 2 -c:v libx265 -x265-params "log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:keyint=48" -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc -tag:v hvc1 -c:a aac -b:a 96k fade_pq.mp4
+[[ -f fade_pq.mkv ]] || $FF -i fade_pq.mp4 -c copy fade_pq.mkv
