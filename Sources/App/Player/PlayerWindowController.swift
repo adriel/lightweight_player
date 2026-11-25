@@ -442,9 +442,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     func playerViewMouseActivity() { showControls() }
 
-    /// Pointer left the player: hide the controls straight away while playing (like IINA).
+    /// Pointer left the player: hide the controls straight away, playing or paused (like IINA).
     func playerViewMouseExited() {
-        guard engine?.isPlaying == true, !titleTags.hovering, !isFullScreen else { return }
+        guard engine != nil, !titleTags.hovering, !isFullScreen else { return }
         hideTimer?.invalidate()
         hideTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
             guard let self, let window = self.window else { return }
@@ -489,9 +489,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func hideControlsIfIdle() {
         guard let window, engine != nil else { return }
-        // Keep visible while the pointer is over the bar or the app isn't playing.
+        // Keep visible while the pointer is over the bar or a title tag (playing or paused).
         let p = playerView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        if playerView.controlBar.frame.contains(p) || engine?.isPlaying == false || titleTags.hovering {
+        if playerView.controlBar.frame.contains(p) || titleTags.hovering {
             hideTimer = Timer.scheduledTimer(withTimeInterval: settings.controlsHideDelay, repeats: false) { [weak self] _ in self?.hideControlsIfIdle() }
             return
         }
