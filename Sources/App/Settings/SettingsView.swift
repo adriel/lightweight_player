@@ -224,6 +224,7 @@ enum FormatSupport {
         FormatRow(name: "MPEG-TS / M2TS", detail: "FFmpeg demux (Annex-B converted for VideoToolbox)", status: .hardware),
         FormatRow(name: "AVI, FLV, OGG and other FFmpeg containers", detail: "Plays when the codecs inside are supported", status: .partial),
         FormatRow(name: "HTTP / HTTPS direct files", detail: "Range requests, Basic auth from URL, disk-backed buffer", status: .hardware),
+        FormatRow(name: "RTSP live streams (IP cameras)", detail: "FFmpeg over TCP, user:password from URL; resume and drops reconnect to live", status: .hardware),
         FormatRow(name: "HLS / DASH playlists", detail: "Not supported yet", status: .unsupported),
     ]
 

@@ -31,7 +31,7 @@ struct OpenLocationView: View {
 
     static func validURL(_ s: String) -> URL? {
         guard let u = URL(string: s.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let scheme = u.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let scheme = u.scheme?.lowercased(), ["http", "https", "rtsp", "rtsps"].contains(scheme),
               let host = u.host, !host.isEmpty else { return nil }
         return u
     }
@@ -54,7 +54,7 @@ struct OpenLocationView: View {
                 Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 52, height: 52)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Open Location").font(.headline)
-                    Text("Enter the address of a video file (.mp4, .mkv, .webm, …). It plays while it downloads.")
+                    Text("Enter the address of a video file (.mp4, .mkv, .webm, …) or an rtsp:// camera stream. Files play while they download.")
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -82,7 +82,7 @@ struct OpenLocationView: View {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         HStack(spacing: 6) {
             if let u = url {
-                let secure = u.scheme?.lowercased() == "https"
+                let secure = ["https", "rtsps"].contains(u.scheme?.lowercased() ?? "")
                 Image(systemName: secure ? "lock.fill" : "lock.open").foregroundStyle(secure ? Color.secondary : Color.orange)
                 Text(Self.siteName(u.host ?? "")).fontWeight(.medium).lineLimit(1).fixedSize()
                 let file = (u.lastPathComponent.removingPercentEncoding ?? u.lastPathComponent)
@@ -94,7 +94,7 @@ struct OpenLocationView: View {
                 Text("Paste or type a link. user:password@host is sent as Basic authentication.")
             } else {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("Enter a full http:// or https:// address.")
+                Text("Enter a full http://, https:// or rtsp:// address.")
             }
             Spacer(minLength: 0)
         }
