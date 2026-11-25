@@ -69,6 +69,18 @@ final class Settings: ObservableObject {
     /// DTS-HD MA: decode only the lossy DTS core (much cheaper) instead of the lossless extension.
     @Published var dtsCoreOnly: Bool { didSet { d.set(dtsCoreOnly, forKey: "dtsCoreOnly") } }
 
+    // Seek-bar previews (thumbnails)
+    @Published var thumbnailsEnabled: Bool { didSet { d.set(thumbnailsEnabled, forKey: "thumbnailsEnabled") } }
+    /// Also for http(s) streams (each hovered spot downloads a little of the file).
+    @Published var thumbnailsForStreams: Bool { didSet { d.set(thumbnailsForStreams, forKey: "thumbnailsForStreams") } }
+    /// Longest side of the preview, in points.
+    @Published var thumbnailSize: Int { didSet { d.set(thumbnailSize, forKey: "thumbnailSize") } }
+    /// Sharp: made at the display's pixel density (2× on Retina). Off: 1 pixel per point (smaller cache).
+    @Published var thumbnailSharp: Bool { didSet { d.set(thumbnailSharp, forKey: "thumbnailSharp") } }
+    @Published var thumbnailCacheMB: Int { didSet { d.set(thumbnailCacheMB, forKey: "thumbnailCacheMB"); if thumbnailCacheMB < oldValue { ThumbnailCache.trimToSettings() } } }
+    /// Delete thumbnails of videos not opened for this many days (0 = keep).
+    @Published var thumbnailCacheDays: Int { didSet { d.set(thumbnailCacheDays, forKey: "thumbnailCacheDays"); ThumbnailCache.trimToSettings() } }
+
     // Streaming
     @Published var bufferMinutes: Double { didSet { d.set(bufferMinutes, forKey: "bufferMinutes") } }
     @Published var maxCacheGB: Double { didSet { d.set(maxCacheGB, forKey: "maxCacheGB") } }
@@ -80,6 +92,8 @@ final class Settings: ObservableObject {
             "volume": 1.0, "controlsHideDelay": 2.0,
             "autoCrop": true, "hdrEnabled": true, "fullScreenCoversNotch": false, "nativeFullScreen": false, "brightness": 0.0, "gamma": 1.0, "contrast": 1.0,
             "subtitleMode": SubtitleMode.forcedOnly.rawValue, "subtitleFontSize": 1.0, "loadSidecarSubtitles": true, "dtsCoreOnly": false, "useMediaExtensions": false,
+            "thumbnailsEnabled": true, "thumbnailsForStreams": false, "thumbnailSize": 240, "thumbnailSharp": true,
+            "thumbnailCacheMB": 300, "thumbnailCacheDays": 30,
             "bufferMinutes": 10.0, "maxCacheGB": 8.0, "networkTimeout": 30.0,
         ])
         seekStep = d.double(forKey: "seekStep")
@@ -100,6 +114,12 @@ final class Settings: ObservableObject {
         loadSidecarSubtitles = d.bool(forKey: "loadSidecarSubtitles")
         dtsCoreOnly = d.bool(forKey: "dtsCoreOnly")
         useMediaExtensions = d.bool(forKey: "useMediaExtensions")
+        thumbnailsEnabled = d.bool(forKey: "thumbnailsEnabled")
+        thumbnailsForStreams = d.bool(forKey: "thumbnailsForStreams")
+        thumbnailSize = d.integer(forKey: "thumbnailSize")
+        thumbnailSharp = d.bool(forKey: "thumbnailSharp")
+        thumbnailCacheMB = d.integer(forKey: "thumbnailCacheMB")
+        thumbnailCacheDays = d.integer(forKey: "thumbnailCacheDays")
         bufferMinutes = d.double(forKey: "bufferMinutes")
         maxCacheGB = d.double(forKey: "maxCacheGB")
         networkTimeout = d.double(forKey: "networkTimeout")

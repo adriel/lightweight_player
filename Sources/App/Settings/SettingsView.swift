@@ -22,6 +22,7 @@ final class SettingsWindowController: NSWindowController {
         }
         add("Playback", "play.rectangle", GeneralTab())
         add("Video", "sun.max", VideoTab())
+        add("Previews", "photo.on.rectangle", PreviewsTab())
         add("Subtitles", "captions.bubble", SubtitlesTab())
         add("Streaming", "network", StreamingTab())
         add("Formats", "film.stack", FormatsTab())
@@ -33,7 +34,7 @@ final class SettingsWindowController: NSWindowController {
         w.contentMinSize = NSSize(width: 560, height: 380)
         w.setContentSize(NSSize(width: 640, height: 540))
         super.init(window: w)
-        if CommandLine.arguments.contains("--settings") { tabs.selectedTabViewItemIndex = 4 }
+        if CommandLine.arguments.contains("--settings") { tabs.selectedTabViewItemIndex = 5 }
         w.center()
         w.setFrameAutosaveName("SettingsWindow")      // restores the last size/position (after center as default)
     }
@@ -114,6 +115,65 @@ private struct VideoTab: View {
             Text(String(format: f, v.wrappedValue)).monospacedDigit().frame(width: 48)
         }
     }
+}
+
+private struct PreviewsTab: View {
+    @EnvironmentObject var s: Settings
+    @State private var cacheBytes: Int64?
+    @State private var clearing = false
+    private let sizes: [(String, Int)] = [("Small", 160), ("Medium", 240), ("Large", 320), ("Extra large", 400)]
+    private let limits = [100, 300, 500, 1000, 2000]
+    private let ages: [(String, Int)] = [("1 day", 1), ("1 week", 7), ("30 days", 30), ("90 days", 90), ("Forever", 0)]
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Show a preview when hovering the seek bar", isOn: $s.thumbnailsEnabled)
+                Toggle("Also for network streams", isOn: $s.thumbnailsForStreams)
+                    .disabled(!s.thumbnailsEnabled)
+                Picker("Size", selection: $s.thumbnailSize) {
+                    ForEach(sizes, id: \.1) { Text("\($0.0) (\($0.1) pt)").tag($0.1) }
+                }
+                .disabled(!s.thumbnailsEnabled)
+                Picker("Quality", selection: $s.thumbnailSharp) {
+                    Text("Sharp (full Retina resolution)").tag(true)
+                    Text("Standard (smaller cache)").tag(false)
+                }
+                .disabled(!s.thumbnailsEnabled)
+            } header: { Text("Thumbnail preview") } footer: {
+                Text("Made on demand from the keyframe nearest the pointer, by a separate light decoder — playback isn't touched. For network streams, each new spot you hover downloads a little of the file.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Cache") {
+                Picker("Keep thumbnails for", selection: $s.thumbnailCacheDays) {
+                    ForEach(ages, id: \.1) { Text($0.0).tag($0.1) }
+                }
+                Picker("Maximum cache size", selection: $s.thumbnailCacheMB) {
+                    ForEach(limits, id: \.self) { Text($0 >= 1000 ? "\($0 / 1000) GB" : "\($0) MB").tag($0) }
+                }
+                LabeledContent("Location", value: ThumbnailCache.directory.path)
+                LabeledContent("Currently used") {
+                    HStack {
+                        Text(cacheBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "…").monospacedDigit()
+                        Button(clearing ? "Clearing…" : "Clear Cache") {
+                            clearing = true
+                            ThumbnailCache.clear { clearing = false; refresh() }
+                        }
+                        .disabled(clearing || cacheBytes == 0)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .task {
+            // Hovering in an open video adds files; keep the number current while this tab is visible.
+            while !Task.isCancelled {
+                refresh()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+    private func refresh() { ThumbnailCache.size { cacheBytes = $0 } }
 }
 
 private struct SubtitlesTab: View {

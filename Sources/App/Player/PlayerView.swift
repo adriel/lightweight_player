@@ -18,6 +18,7 @@ final class PlayerView: NSView {
     private let osd = OSDView()
     private let bufferingHUD = BufferingHUD()
     let sidebar = SidebarContainer()
+    private let thumbnail = ThumbnailPreview()
     private var sidebarTrailing: NSLayoutConstraint!
     private(set) var isSidebarShown = false
     private var videoView: NSView?
@@ -76,6 +77,7 @@ final class PlayerView: NSView {
                 self?.applySavedBarPosition(); self?.layoutSubtreeIfNeeded()
             }
         }
+        addSubview(thumbnail)                       // frame-positioned in placeThumbnail
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         sidebar.isHidden = true
         addSubview(sidebar)                         // above the control bar, like IINA
@@ -236,8 +238,45 @@ final class PlayerView: NSView {
         }
     }
 
+    // MARK: Seek-bar thumbnail
+
+    private var thumbnailFraction = 0.0
+    private var thumbnailPoints: CGFloat = 240
+
+    /// Shows `image` above the control bar at seek-bar position `fraction` (longest side `points`).
+    func showThumbnail(_ image: CGImage, at fraction: Double, points: CGFloat) {
+        thumbnail.setImage(image)
+        thumbnailPoints = points
+        moveThumbnail(to: fraction)
+    }
+
+    /// Follows the pointer with the current image (until the next one is ready); no-op while none is shown.
+    func moveThumbnail(to fraction: Double) {
+        thumbnailFraction = fraction
+        guard let img = thumbnail.image, controlBar.alphaValue > 0.01, !controlBar.isHidden else { thumbnail.isHidden = true; return }
+        let aspect = CGFloat(img.height) / CGFloat(max(img.width, 1))
+        var w = thumbnailPoints, h = thumbnailPoints * aspect
+        if h > w { h = thumbnailPoints; w = thumbnailPoints / aspect }
+        // Don't let it outgrow a small window.
+        let fit = min(1, (bounds.width - 16) / max(w, 1), (bounds.height * 0.6) / max(h, 1))
+        w = (w * fit).rounded(); h = (h * fit).rounded()
+        let anchor = convert(controlBar.seekPoint(at: fraction), from: controlBar)
+        let bar = controlBar.frame
+        let x = min(max(anchor.x - w / 2, 8), bounds.width - w - 8)
+        var y = bar.maxY + 8
+        if y + h > bounds.height - videoTopInset - 4 { y = bar.minY - 8 - h }    // bar dragged to the top: show below it
+        thumbnail.frame = NSRect(x: x, y: max(4, y), width: w, height: h)
+        thumbnail.isHidden = false
+    }
+
+    func hideThumbnail() {
+        thumbnail.isHidden = true
+        thumbnail.setImage(nil)
+    }
+
     /// Lift subtitles above the control bar while it's visible.
     func setControlsVisible(_ visible: Bool, animated: Bool) {
+        if !visible { hideThumbnail() }
         let apply = {
             self.controlBar.animator().alphaValue = visible ? 1 : 0
             self.subtitleBottom.animator().constant = visible ? -(ControlBar.preferredHeight + 30) : -28

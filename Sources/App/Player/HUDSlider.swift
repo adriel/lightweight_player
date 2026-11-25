@@ -29,6 +29,8 @@ final class HUDSlider: NSView {
     }
 
     private var trackInset: CGFloat { knobStyle == .pill ? 8 : 2 }
+    /// x of `fraction` along the track, in the slider's coordinates.
+    func xPosition(at fraction: Double) -> CGFloat { trackInset + (bounds.width - trackInset * 2) * fraction }
     private func fraction(at p: NSPoint) -> Double {
         let w = bounds.width - trackInset * 2
         return Double(min(max((p.x - trackInset) / max(w, 1), 0), 1))
