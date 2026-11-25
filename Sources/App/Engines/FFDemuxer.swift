@@ -37,7 +37,8 @@ final class FFDemuxer {
 
     convenience init(url: String) throws { try self.init(url: url, source: nil) }
 
-    init(url: String, source: CachedHTTPSource?) throws {
+    /// `videoOnly`: a second, light demuxer for seek-bar thumbnails — no audio, no playback decoder session.
+    init(url: String, source: CachedHTTPSource?, videoOnly: Bool = false) throws {
         interruptFlag.initialize(to: 0)
         var c: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
         c?.pointee.interrupt_callback.callback = { opaque in opaque!.assumingMemoryBound(to: Int32.self).pointee }
@@ -75,6 +76,7 @@ final class FFDemuxer {
             av_dict_set(&opts, "reconnect", "1", 0)
             av_dict_set(&opts, "reconnect_streamed", "1", 0)
             av_dict_set(&opts, "reconnect_delay_max", "10", 0)
+            if videoOnly && url.contains("://") { av_dict_set(&opts, "rw_timeout", "10000000", 0) }   // 10 s
         }
         let tOpen = Date()
         let r = avformat_open_input(&c, source == nil ? url : nil, nil, &opts)
@@ -91,17 +93,17 @@ final class FFDemuxer {
             if ProcessInfo.processInfo.environment["LP_OPEN_DEBUG"] != nil { NSLog("open: find_stream_info %.0f ms", Date().timeIntervalSince(t) * 1000) }
         }
         videoIndex = av_find_best_stream(c, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0)
-        audioIndex = av_find_best_stream(c, AVMEDIA_TYPE_AUDIO, -1, videoIndex, nil, 0)
+        audioIndex = videoOnly ? -1 : av_find_best_stream(c, AVMEDIA_TYPE_AUDIO, -1, videoIndex, nil, 0)
         // Discard every stream we don't render so libavformat doesn't allocate packets for them.
         for i in 0..<Int32(c.pointee.nb_streams) where i != videoIndex && i != audioIndex {
             c.pointee.streams[Int(i)]!.pointee.discard = AVDISCARD_ALL
         }
         if videoIndex >= 0 { buildVideoFormat() }
-        if videoIndex >= 0, swVideo == nil, let fd = videoFormat, ProcessInfo.processInfo.environment["LP_LAYER_DECODE"] == nil {
+        if !videoOnly, videoIndex >= 0, swVideo == nil, let fd = videoFormat, ProcessInfo.processInfo.environment["LP_LAYER_DECODE"] == nil {
             hwVideo = HWVideoDecoder(format: fd)     // nil (→ the layer decodes) if VideoToolbox can't do it in hardware
         }
         if audioIndex >= 0 { buildAudioFormat() }
-        collectSubtitleStreams()
+        if !videoOnly { collectSubtitleStreams() }
     }
 
     /// Audio streams (for the track picker).

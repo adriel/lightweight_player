@@ -11,6 +11,8 @@ protocol ControlBarDelegate: AnyObject {
     func controlBarTogglePiP()
     func controlBarShowSettings()
     func controlBarTimeString(at fraction: Double) -> String
+    /// Pointer over the seek bar at `fraction` (nil: left it) — drives the thumbnail preview.
+    func controlBarHover(fraction: Double?)
 }
 
 /// IINA-style floating controls: translucent HUD panel (the video tints through it) with a hairline rim,
@@ -164,7 +166,13 @@ final class ControlBar: NSView {
         volumeButton.setSymbol(name, size: 12)
     }
 
+    /// Point on the seek track at `fraction`, in this view's coordinates.
+    func seekPoint(at fraction: Double) -> NSPoint {
+        convert(NSPoint(x: seek.xPosition(at: fraction), y: seek.bounds.midY), from: seek)
+    }
+
     private func hover(_ f: Double?) {
+        delegate?.controlBarHover(fraction: f)
         guard let f, let d = delegate else { hoverBox.isHidden = true; return }
         hoverLabel.stringValue = d.controlBarTimeString(at: f)
         hoverX.constant = 4 + (seek.bounds.width - 8) * f

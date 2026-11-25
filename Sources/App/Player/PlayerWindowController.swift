@@ -139,6 +139,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func startEngine(_ e: PlayerEngine, playing url: URL) {
         engine = e
+        startThumbnails(for: url, engine: e)
         e.volume = Float(muted ? 0 : settings.volume)
         playerView.setVideoView(e.view)
         applyColorAdjustments()
@@ -395,6 +396,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         pip = nil
         engine?.close()
         engine = nil
+        stopThumbnails()
         playerView.setVideoView(nil)
         playerView.showSubtitle(nil)
         uiTimer?.invalidate(); uiTimer = nil
@@ -615,6 +617,48 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         guard let ch = engine?.chapters.last(where: { $0.start <= t + 0.01 }) else { return formatTime(t) }
         return formatTime(t) + "  " + ch.title
     }
+    func controlBarHover(fraction: Double?) {
+        guard let f = fraction, let gen = thumbnails, settings.thumbnailsEnabled,
+              currentURL?.isFileURL == true || settings.thumbnailsForStreams,
+              let d = engine?.duration, d > 0 else {
+            hoverFraction = nil
+            playerView.hideThumbnail()
+            thumbnails?.forgetLastDelivered()
+            return
+        }
+        hoverFraction = f
+        playerView.moveThumbnail(to: f)
+        let scale = settings.thumbnailSharp ? (window?.backingScaleFactor ?? 2) : 1
+        gen.request(time: f * d, maxPixels: Int(CGFloat(settings.thumbnailSize) * scale))
+    }
+
+    // MARK: Seek-bar thumbnails
+
+    private var thumbnails: ThumbnailGenerator?
+    private var hoverFraction: Double?
+
+    private func startThumbnails(for url: URL, engine e: PlayerEngine) {
+        stopThumbnails()
+        // HLS (Twitch / live) has no file to seek in; everything else goes through FFmpeg demux + VideoToolbox.
+        let hls = url.pathExtension.lowercased() == "m3u8" || (!url.isFileURL && e is AVPlayerEngine)
+        guard !hls, url.isFileURL || url.scheme?.hasPrefix("http") == true else { return }
+        let gen = ThumbnailGenerator(url: url, applyRotation: e is AVPlayerEngine)
+        gen.onThumbnail = { [weak self] image, _ in
+            guard let self, let f = self.hoverFraction, self.settings.thumbnailsEnabled else { return }
+            self.playerView.showThumbnail(image, at: f, points: CGFloat(self.settings.thumbnailSize))
+        }
+        thumbnails = gen
+    }
+
+    private func stopThumbnails() {
+        guard let gen = thumbnails else { return }
+        gen.close()
+        thumbnails = nil
+        hoverFraction = nil
+        playerView.hideThumbnail()
+        ThumbnailCache.trimToSettings()
+    }
+
     func controlBarShowSettings() { (NSApp.delegate as? AppDelegate)?.showSettings(nil) }
     func controlBarTogglePiP() {
         guard let pip else { return }
