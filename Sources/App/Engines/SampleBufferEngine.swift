@@ -124,6 +124,8 @@ final class SampleBufferEngine: PlayerEngine {
                     // can wait forever on a separate audio input with only a couple of seconds queued.
                     synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
                 }
+                // Live camera: frames arrive in real time, so the "sufficient data" guard would only add delay.
+                if FFDemuxer.isRTSP(path) { synchronizer.delaysRateChangeUntilHasSufficientMediaData = false }
                 let d = try FFDemuxer(url: path, source: src)
                 if let src, d.duration > 0 {
                     // Read-ahead target = N minutes at the file's average bitrate.

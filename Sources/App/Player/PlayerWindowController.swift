@@ -80,12 +80,24 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func open(_ url: URL, forceSampleBufferEngine: Bool = false) {
         saveResumePosition()
         closeEngine()
+        let reconnecting = liveReconnect && url == currentURL
+        liveReconnect = false
         currentURL = url
+        isLive = false
+        playerView.controlBar.isLive = false
+        if reconnecting {
+            // Back to the live edge of the same camera: keep the window as the user left it.
+            keepWindowSizeOnReady = true
+            openStarted = Date()
+            startEngine(SampleBufferEngine(), playing: url)
+            return
+        }
         titleTags.decoding = nil; titleTags.hdr = nil; titleTags.engine = nil; titleTags.audio = nil; titleTags.crop = nil
-        PlaybackHistory.shared.didOpen(url, key: resumeKey(url), name: url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent)
+        let name = Self.isRTSP(url) ? Self.cameraTitle(url) : url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
+        PlaybackHistory.shared.didOpen(url, key: resumeKey(url), name: name)
         color = settings.colorAdjustment(for: resumeKey(url)) ?? (0, 1, 1)
         claimColorSliders()
-        fullTitle = url.isFileURL ? url.lastPathComponent : (url.lastPathComponent.removingPercentEncoding ?? url.absoluteString)
+        fullTitle = url.isFileURL ? url.lastPathComponent : Self.isRTSP(url) ? name : (url.lastPathComponent.removingPercentEncoding ?? url.absoluteString)
         fitTitle()
         window?.representedURL = url.isFileURL ? url : nil
         if url.isFileURL { NSDocumentController.shared.noteNewRecentDocumentURL(url) }
@@ -137,6 +149,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private var resolving: URL?
 
+    /// Live stream with no timeline (IP camera, live HLS): no seeking; resuming an RTSP camera reconnects.
+    private var isLive = false
+    private var liveReconnect = false
+    private var keepWindowSizeOnReady = false
+
+    static func isRTSP(_ url: URL) -> Bool { ["rtsp", "rtsps"].contains(url.scheme?.lowercased() ?? "") }
+
+    /// "10.0.0.200 · Streaming/Channels/2" — the camera's address and stream path, never the sign-in.
+    static func cameraTitle(_ url: URL) -> String {
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let host = url.host ?? "Camera"
+        return path.isEmpty ? host : "\(host) · \(path.removingPercentEncoding ?? path)"
+    }
+
+    /// Reopen the current RTSP stream to jump back to real time (after a pause, or when the camera drops).
+    private func reconnectLive(_ message: String) {
+        guard let u = currentURL else { return }
+        liveReconnect = true
+        open(u)
+        playerView.flash(message)
+    }
+
     private func startEngine(_ e: PlayerEngine, playing url: URL) {
         engine = e
         startThumbnails(for: url, engine: e)
@@ -156,7 +190,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .ready:
             if Self.openDebug { NSLog("open: ready after %.0f ms (%@)", Date().timeIntervalSince(openStarted) * 1000, String(describing: type(of: engine))) }
             (engine.view as? LayerHostView)?.videoSize = engine.naturalSize
-            sizeWindowToVideo()
+            if keepWindowSizeOnReady { keepWindowSizeOnReady = false } else { sizeWindowToVideo() }
+            if let u = currentURL, !u.isFileURL, !(engine.duration > 0) {
+                isLive = true
+                pendingResume = nil
+                playerView.controlBar.isLive = true
+            }
             startCropDetection()
             setupSubtitles()
             engine.setHDR(settings.hdrEnabled)
@@ -194,6 +233,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             sizeWindowToVideo()
             startCropDetection()
         case .ended:
+            if isLive, let u = currentURL, Self.isRTSP(u) {
+                // The camera closed the stream (reboot, network blip): reconnect.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    guard let self, self.currentURL == u, self.isLive else { return }
+                    self.reconnectLive("Reconnecting…")
+                }
+                return
+            }
             if playerView.sidebar.model.loop, engine.duration > 0 {
                 engine.seek(to: 0, accurate: true)
                 engine.play()
@@ -555,7 +602,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var skipBaseTimer: Timer?
 
     func skip(_ s: Double, held: Bool = false) {
-        guard let engine else { return }
+        guard let engine, !isLive else { return }
         let now = engine.currentTime
         // Forward keyframe seeks may land past the target: never step back behind where we already are.
         let base = skipBase.map { s > 0 ? max($0, now) : $0 } ?? now
@@ -580,6 +627,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     @objc func togglePlay() {
         guard let engine else { return }
         if engine.isPlaying { engine.pause() }
+        else if isLive, let u = currentURL, Self.isRTSP(u) {
+            // A paused camera would resume from where it stopped, minutes behind: jump back to now.
+            reconnectLive("Live")
+            return
+        }
         else {
             // At the end: start again from the beginning.
             if engine.duration > 0, engine.currentTime >= engine.duration - 0.25 { engine.seek(to: 0, accurate: true) }

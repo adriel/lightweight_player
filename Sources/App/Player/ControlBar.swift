@@ -30,10 +30,21 @@ final class ControlBar: NSView {
     private var subButton: HUDButton!
     private var adjustButton: HUDButton!
     private var pipButton: HUDButton!
+    private var rewButton: HUDButton!
+    private var fwdButton: HUDButton!
     private let hoverLabel = NSTextField(labelWithString: "")
     private let hoverBox = NSView()
     private var hoverX: NSLayoutConstraint!
     var showRemaining = false
+    /// Live stream (IP camera): no timeline to scrub or skip through; the right label reads LIVE.
+    var isLive = false {
+        didSet {
+            guard isLive != oldValue else { return }
+            seek.isHidden = isLive
+            for b in [rewButton!, fwdButton!] { b.isEnabled = !isLive; b.alphaValue = isLive ? 0.4 : 1 }
+            if isLive { hoverBox.isHidden = true }
+        }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -52,8 +63,10 @@ final class ControlBar: NSView {
         glass.addSubview(content)
 
         let rew = HUDButton(symbol: "backward.fill", size: 15, target: self, action: #selector(rewind))
+        rewButton = rew
         playButton = HUDButton(symbol: "play.fill", size: 21, target: self, action: #selector(togglePlay))
         let fwd = HUDButton(symbol: "forward.fill", size: 15, target: self, action: #selector(forward))
+        fwdButton = fwd
         volumeButton = HUDButton(symbol: "speaker.wave.2.fill", size: 12, target: self, action: #selector(toggleMute))
         subButton = HUDButton(symbol: "captions.bubble", size: 13, target: self, action: #selector(subs(_:)))
         adjustButton = HUDButton(symbol: "slider.horizontal.3", size: 12, target: self, action: #selector(adjust(_:)))
@@ -149,7 +162,7 @@ final class ControlBar: NSView {
         if !seek.isDragging { seek.value = duration > 0 ? time / duration : 0 }
         if seek.buffered != buffered { seek.buffered = buffered }
         elapsed.stringValue = paddedTime(time)
-        total.stringValue = showRemaining ? "-" + paddedTime(max(0, duration - time)) : paddedTime(duration)
+        total.stringValue = isLive ? "● LIVE" : showRemaining ? "-" + paddedTime(max(0, duration - time)) : paddedTime(duration)
         playButton.setSymbol(playing ? "pause.fill" : "play.fill", size: 21)
     }
 
@@ -172,8 +185,8 @@ final class ControlBar: NSView {
     }
 
     private func hover(_ f: Double?) {
-        delegate?.controlBarHover(fraction: f)
-        guard let f, let d = delegate else { hoverBox.isHidden = true; return }
+        delegate?.controlBarHover(fraction: isLive ? nil : f)
+        guard let f, let d = delegate, !isLive else { hoverBox.isHidden = true; return }
         hoverLabel.stringValue = d.controlBarTimeString(at: f)
         hoverX.constant = 4 + (seek.bounds.width - 8) * f
         hoverBox.isHidden = false
@@ -189,7 +202,7 @@ final class ControlBar: NSView {
     @objc private func adjust(_ s: NSView) { delegate?.controlBarShowVideoAdjust(from: adjustButton) }
     @objc private func pip() { delegate?.controlBarTogglePiP() }
     @objc private func settings() { delegate?.controlBarShowSettings() }
-    @objc private func toggleRemaining() { showRemaining.toggle() }
+    @objc private func toggleRemaining() { if !isLive { showRemaining.toggle() } }
 
     // Dragging the bar's background moves it (buttons and sliders handle their own clicks). Clicks never reach the
     // video underneath (double-click there = full screen).

@@ -37,6 +37,11 @@ final class FFDemuxer {
 
     convenience init(url: String) throws { try self.init(url: url, source: nil) }
 
+    static func isRTSP(_ url: String) -> Bool {
+        let l = url.lowercased()
+        return l.hasPrefix("rtsp://") || l.hasPrefix("rtsps://")
+    }
+
     /// `videoOnly`: a second, light demuxer for seek-bar thumbnails — no audio, no playback decoder session.
     init(url: String, source: CachedHTTPSource?, videoOnly: Bool = false) throws {
         interruptFlag.initialize(to: 0)
@@ -72,6 +77,13 @@ final class FFDemuxer {
             // Unindexed fragmented MP4: don't let libavformat walk every fragment at open (see FragmentedMP4).
             fragmented = f
             c?.pointee.flags |= AVFMT_FLAG_IGNIDX
+        } else if Self.isRTSP(url) {
+            // IP cameras: TCP-interleaved RTP (UDP drops packets on Wi-Fi → smeared frames), a short reorder
+            // window, and a socket timeout so a camera that goes away fails the open. No "nobuffer": the packets
+            // read while probing include the camera's opening keyframe; dropping them waits a whole GOP (4 s).
+            av_dict_set(&opts, "rtsp_transport", "tcp", 0)
+            av_dict_set(&opts, "max_delay", "500000", 0)
+            av_dict_set(&opts, "timeout", "10000000", 0)
         } else {
             av_dict_set(&opts, "reconnect", "1", 0)
             av_dict_set(&opts, "reconnect_streamed", "1", 0)
@@ -88,7 +100,9 @@ final class FFDemuxer {
         if needsProbe(c) {
             let t = Date()
             c.pointee.probesize = 2_000_000
-            c.pointee.max_analyze_duration = 2 * Int64(AV_TIME_BASE)
+            // Live camera: everything probed is played late by that much, so keep it short (the SDP already
+            // carries SPS/PPS; the first keyframe fills in the rest).
+            c.pointee.max_analyze_duration = Self.isRTSP(url) ? Int64(AV_TIME_BASE) / 2 : 2 * Int64(AV_TIME_BASE)
             avformat_find_stream_info(c, nil)
             if ProcessInfo.processInfo.environment["LP_OPEN_DEBUG"] != nil { NSLog("open: find_stream_info %.0f ms", Date().timeIntervalSince(t) * 1000) }
         }
